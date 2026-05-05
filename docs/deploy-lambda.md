@@ -7,7 +7,7 @@ This guide walks through deploying PolyStac to AWS Lambda for both supported bac
 
 Both deploy from the same Go binary (`cmd/polystac-lambda`). Cold start measured on a 512 MB function: **~200–350 ms** for both backends — well inside the SDD §NF-2 budget.
 
-The repo ships ready-to-use templates in `deploy/sam/template.yaml` (AWS SAM) and `deploy/terraform/main.tf` (Terraform module). Either can drive both backends.
+The repo ships a Terraform module at [`deploy/terraform/main.tf`](../deploy/terraform/main.tf) that drives both backends. Operators on AWS SAM / CloudFormation can translate it directly — the resource set is small (Lambda function + Function URL + IAM role + log group + optional VPC config).
 
 ## 1. Build the deployment package
 
@@ -16,11 +16,6 @@ The repo ships ready-to-use templates in `deploy/sam/template.yaml` (AWS SAM) an
 ```sh
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
   go build -trimpath -ldflags='-s -w' -o bootstrap ./cmd/polystac-lambda
-
-# SAM expects a directory:
-mkdir -p .build && cp bootstrap .build/bootstrap
-
-# Terraform expects a zip:
 zip polystac-lambda.zip bootstrap
 ```
 
@@ -36,24 +31,7 @@ The resulting binary is **~16 MB**; the deployment package is the same size.
 - The Postgres host is reachable from a private subnet (typical for RDS).
 - A security group on the DB that allows inbound 5432 from the Lambda's security group.
 
-### With SAM
-
-```sh
-sam deploy \
-  --resolve-s3 \
-  --stack-name polystac-pgstac \
-  --capabilities CAPABILITY_IAM \
-  --template deploy/sam/template.yaml \
-  --parameter-overrides \
-    Backend=pgstac \
-    Architecture=arm64 \
-    PgDsn="postgresql://stac:****@stac-db.cluster-xxx.us-east-1.rds.amazonaws.com:5432/stac?sslmode=require" \
-    PgPoolMin=0 PgPoolMax=2 \
-    VpcSubnets="subnet-aaaa,subnet-bbbb" \
-    VpcSecurityGroups="sg-cccc"
-```
-
-### With Terraform
+### Terraform
 
 ```hcl
 module "polystac_pgstac" {
@@ -108,27 +86,10 @@ This is a one-time setup task; PolyStac itself does not embed migrations.
 
 - An AWS OpenSearch Service domain (or any OS/ES cluster reachable over HTTPS). 1.x, 2.x, and ES 7.17/8.x work.
 - One of the following auth models:
-  - **Internal user** with username/password (fine-grained access control). Set `EsUsername` / `EsPassword`.
+  - **Internal user** with username/password (fine-grained access control). Set `es_username` / `es_password`.
   - **IAM role-based** (preferred for production). Attach an IAM policy granting `es:ESHttp*` on the domain ARN to the Lambda's role; the OpenSearch SDK then signs requests automatically. Currently PolyStac uses HTTP Basic — for IAM signing on AWS-managed OS, use a small companion Lambda or a SigV4-signing reverse proxy in front. Tracked in the v1.1 roadmap.
 
-### With SAM
-
-```sh
-sam deploy \
-  --resolve-s3 \
-  --stack-name polystac-os \
-  --capabilities CAPABILITY_IAM \
-  --template deploy/sam/template.yaml \
-  --parameter-overrides \
-    Backend=opensearch \
-    Architecture=arm64 \
-    EsHosts="https://search-mydomain.us-east-1.es.amazonaws.com" \
-    EsUsername="admin" \
-    EsPassword="****" \
-    EsRefresh="false"
-```
-
-### With Terraform
+### Terraform
 
 ```hcl
 module "polystac_os" {
@@ -162,7 +123,7 @@ If you migrate from `stac-server` or `stac-fastapi-elasticsearch-opensearch` kee
 
 ## 4. Wire a public URL
 
-Both templates create a **Lambda Function URL** with `AuthType=NONE` for simplicity. For production:
+The Terraform module creates a **Lambda Function URL** with `authorization_type = "NONE"` for simplicity. For production:
 
 - Put **CloudFront** in front for DDoS protection, caching, and a custom domain.
 - Or use **API Gateway HTTP API** for fine-grained authn/authz (Cognito, JWT, IAM).
@@ -172,8 +133,7 @@ A Function URL gets you up in minutes; CloudFront/APIGW are 30 minutes more if y
 ## 5. Verify
 
 ```sh
-URL=$(aws cloudformation describe-stacks --stack-name polystac-pgstac \
-  --query 'Stacks[0].Outputs[?OutputKey==`FunctionUrl`].OutputValue' --output text)
+URL=$(terraform output -raw function_url)
 
 curl -s "$URL/" | jq .id
 curl -s "$URL/conformance" | jq '.conformsTo | length'
@@ -211,7 +171,7 @@ You can run this from your laptop, an EC2 jumpbox, or a one-off Fargate task —
 - **Memory:** 128 MB is enough for low-traffic workloads (PolyStac itself uses 7–30 MiB RSS observed in `bench/REPORT.md`). 512 MB is the sweet spot for CPU allocation; Lambda CPU scales with memory up to ~1769 MB.
 - **Timeout:** 30 s default. STAC searches against well-indexed pgstac/OS return in <100 ms; the long tail is bulk ingest. Increase for `polystac migrate` flows.
 - **Logging:** `POLYSTAC_LOG_FORMAT=json` (default in the templates) emits structured logs that CloudWatch Logs Insights queries cleanly. Each request emits one line with `method`, `path`, `status`, `latency_ms`, `backend`.
-- **Tracing:** templates set `Tracing: Active` (X-Ray). PolyStac's OTel facade is wired; a real exporter is on the v1.1 roadmap. X-Ray captures the Lambda runtime span automatically regardless.
+- **Tracing:** the Terraform module sets `tracing_config.mode = "Active"` (X-Ray). PolyStac's OTel facade is wired; a real exporter is on the v1.1 roadmap. X-Ray captures the Lambda runtime span automatically regardless.
 - **VPC cold start:** pgstac requires VPC, which historically added 10+ seconds to cold start. With Lambda's [VPC networking improvements](https://aws.amazon.com/blogs/compute/announcing-improved-vpc-networking-for-aws-lambda-functions/) (2019) the overhead is now < 100 ms — the numbers above already include it.
 
 ## 8. Migrating from `stac-server` (Node)
@@ -239,9 +199,20 @@ For a moderate STAC API workload (1 req/s sustained, 86 400 invocations/day):
 
 Numbers are illustrative — your traffic shape, P95 duration, and free-tier offsets dominate. The point is that PolyStac's smaller memory footprint translates directly to GB-second cost, which is the bulk of Lambda billing.
 
-## 10. Roadmap items affecting Lambda
+## 10. SAM / CloudFormation users
+
+The Terraform module is the source of truth. Translation is mechanical — the resource set is just:
+
+- `aws_lambda_function` (`provided.al2023`, `bootstrap` handler, env vars from §2/§3, optional `vpc_config`)
+- `aws_lambda_function_url` (`AuthType: NONE`, CORS)
+- `aws_iam_role` + `AWSLambdaBasicExecutionRole` (and `AWSLambdaVPCAccessExecutionRole` for pgstac)
+- `aws_cloudwatch_log_group`
+
+If you maintain SAM templates already, the per-template effort to add a PolyStac function is ~30 lines. We don't ship a SAM template because keeping two IaC representations in sync added drift faster than it added value.
+
+## 11. Roadmap items affecting Lambda
 
 - IAM-signed OpenSearch requests (drop the username/password requirement for AWS-managed OS).
 - `polystac-ingest` Lambda variant with SQS event source mapping (today the binary exists but is intended for long-running consumers).
-- Per-function provisioned concurrency examples in the SAM template.
+- Provisioned-concurrency examples in the Terraform module.
 - Real OpenTelemetry → X-Ray exporter wiring.

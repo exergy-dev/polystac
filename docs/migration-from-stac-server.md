@@ -43,7 +43,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 # after first invocation.
 ```
 
-`deploy/sam/template.yaml` and `deploy/terraform/main.tf` are ready-to-edit templates if you want a clean redeploy.
+`deploy/terraform/main.tf` is a ready-to-use module if you want a clean redeploy. SAM/CloudFormation users can translate it directly — see `docs/deploy-lambda.md` §10.
 
 ## Hooks
 
