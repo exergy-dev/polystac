@@ -115,3 +115,55 @@ func TestNullSemantics(t *testing.T) {
 		t.Error("comparison with NULL should yield false")
 	}
 }
+
+// TestSpatialPredicatesAreExact verifies the oracle uses real geometry
+// predicates rather than a bbox approximation: two right triangles
+// whose bboxes overlap but whose interiors are disjoint must report
+// S_INTERSECTS=false and S_DISJOINT=true.
+func TestSpatialPredicatesAreExact(t *testing.T) {
+	// Item: triangle in x+y <= 4 (vertices 0,0; 4,0; 0,4).
+	it := &stac.Item{
+		ID:         "tri-A",
+		Collection: "c",
+		Geometry: &stac.Geometry{
+			Type: stac.GeometryPolygon,
+			Coordinates: [][][]float64{{
+				{0, 0}, {4, 0}, {0, 4}, {0, 0},
+			}},
+		},
+		BBox:       []float64{0, 0, 4, 4},
+		Properties: stac.ItemProperties{"datetime": "2024-05-01T00:00:00Z"},
+	}
+
+	// Query: triangle in x+y >= 5 (vertices 4,4; 4,1; 1,4). Bbox is
+	// [1,1,4,4], which overlaps the item's [0,0,4,4]; polygons don't.
+	queryPolygon := `S_INTERSECTS(geometry, POLYGON((4 4, 4 1, 1 4, 4 4)))`
+	got, err := Match(mustParse(t, queryPolygon), it)
+	if err != nil {
+		t.Fatalf("intersects: %v", err)
+	}
+	if got {
+		t.Error("S_INTERSECTS: expected false (disjoint triangles); bbox approximation would say true")
+	}
+
+	disjoint := `S_DISJOINT(geometry, POLYGON((4 4, 4 1, 1 4, 4 4)))`
+	got, err = Match(mustParse(t, disjoint), it)
+	if err != nil {
+		t.Fatalf("disjoint: %v", err)
+	}
+	if !got {
+		t.Error("S_DISJOINT: expected true")
+	}
+
+	// Sanity: a query polygon that genuinely overlaps the item must
+	// still return true. Lower-left quadrant centered on origin clips
+	// straight through the item's interior.
+	overlap := `S_INTERSECTS(geometry, POLYGON((0 0, 2 0, 2 2, 0 2, 0 0)))`
+	got, err = Match(mustParse(t, overlap), it)
+	if err != nil {
+		t.Fatalf("overlap: %v", err)
+	}
+	if !got {
+		t.Error("S_INTERSECTS: expected true for overlapping query polygon")
+	}
+}

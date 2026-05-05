@@ -17,22 +17,22 @@
 //   - Advanced: between, in, like, isNull
 //   - Temporal: t_after, t_before, t_during, t_intersects
 //     (operates on properties.datetime / start_datetime / end_datetime)
-//   - Spatial: s_intersects, s_within (bbox approximation — see notes)
-//
-// Spatial caveat: the oracle uses the item's bbox for spatial predicates,
-// not the full geometry. This is intentionally a conservative oracle: it
-// accepts what every backend would accept under a bbox-prefilter, and
-// the property tests scope spatial cases accordingly. For a true polygon-
-// polygon oracle we would pull in a full spatial library, which neither
-// the inmem use case nor the current property-test corpus requires.
+//   - Spatial: s_intersects, s_within, s_contains, s_disjoint (exact
+//     geometry predicates via go-topology-suite; falls back to bbox
+//     approximation when either side cannot be rendered as a geometry)
 package eval
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
+	gtspredicate "github.com/exergy-dev/go-topology-suite/predicate"
 
 	"github.com/example/polystac/pkg/cql2"
 	"github.com/example/polystac/pkg/stac"
@@ -549,7 +549,11 @@ func asInterval(v any) ([2]*time.Time, bool) {
 	return [2]*time.Time{}, false
 }
 
-// evalSpatial uses bbox approximation. See package doc.
+// evalSpatial runs an exact geometric predicate via go-topology-suite.
+// When either side cannot be coerced to a real geometry (or the
+// predicate library returns an error), it falls back to a bbox
+// approximation so older callers and degraded inputs still get a
+// sensible answer.
 func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if len(op.Args) != 2 {
 		return nil, fmt.Errorf("cql2/eval: %s arity", op.Op)
@@ -562,6 +566,16 @@ func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if lg, lok := asGTSGeom(l, item); lok {
+		if rg, rok := asGTSGeom(r, item); rok {
+			if hit, err := spatialPredicate(op.Op, lg, rg); err == nil {
+				return hit, nil
+			}
+		}
+	}
+
+	// bbox fallback for inputs we can't render as full geometries.
 	lb, lok := asBBox(l, item)
 	rb, rok := asBBox(r, item)
 	if !lok || !rok {
@@ -578,6 +592,121 @@ func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 		return !bboxIntersect(lb, rb), nil
 	}
 	return false, nil
+}
+
+func spatialPredicate(op cql2.Operator, a, b gtsgeom.Geometry) (bool, error) {
+	switch op {
+	case cql2.OpSIntersects:
+		return gtspredicate.Intersects(a, b)
+	case cql2.OpSDisjoint:
+		hit, err := gtspredicate.Intersects(a, b)
+		if err != nil {
+			return false, err
+		}
+		return !hit, nil
+	case cql2.OpSWithin:
+		return gtspredicate.Within(a, b)
+	case cql2.OpSContains:
+		return gtspredicate.Contains(a, b)
+	}
+	return false, fmt.Errorf("unsupported op %s", op)
+}
+
+// asGTSGeom converts an evaluated argument (a *stac.Geometry, a CQL2
+// geometry literal, or an item-bound "geometry" reference) into a
+// go-topology-suite geometry. Returns (nil, false) for non-geometry
+// inputs (e.g. raw bbox slices) which the caller bbox-falls-back.
+func asGTSGeom(v any, item *stac.Item) (gtsgeom.Geometry, bool) {
+	switch x := v.(type) {
+	case *stac.Geometry:
+		if x == nil {
+			return nil, false
+		}
+		return stacGeomToGTS(x)
+	case stac.Geometry:
+		return stacGeomToGTS(&x)
+	case cql2.Geometry:
+		return cql2GeomToGTS(x)
+	}
+	if item != nil && item.Geometry != nil {
+		return stacGeomToGTS(item.Geometry)
+	}
+	return nil, false
+}
+
+func stacGeomToGTS(g *stac.Geometry) (gtsgeom.Geometry, bool) {
+	if g == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(g)
+	if err != nil {
+		return nil, false
+	}
+	parsed, err := gtsgeojson.Unmarshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func cql2GeomToGTS(g cql2.Geometry) (gtsgeom.Geometry, bool) {
+	switch x := g.(type) {
+	case *cql2.Point:
+		if x.Empty {
+			return nil, false
+		}
+		return gtsgeom.NewPoint(nil, gtsgeom.XY{X: x.Coord.X, Y: x.Coord.Y}), true
+	case *cql2.LineString:
+		return gtsgeom.NewLineString(nil, cql2CoordsToXY(x.Coords)), true
+	case *cql2.Polygon:
+		rings := make([][]gtsgeom.XY, len(x.Rings))
+		for i, r := range x.Rings {
+			rings[i] = cql2CoordsToXY(r)
+		}
+		return gtsgeom.NewPolygon(nil, rings...), true
+	case *cql2.MultiPoint:
+		pts := make([]gtsgeom.XY, 0, len(x.Points))
+		for _, p := range x.Points {
+			if p.Empty {
+				continue
+			}
+			pts = append(pts, gtsgeom.XY{X: p.Coord.X, Y: p.Coord.Y})
+		}
+		return gtsgeom.NewMultiPoint(nil, pts), true
+	case *cql2.MultiLineString:
+		parts := make([]*gtsgeom.LineString, 0, len(x.Lines))
+		for _, ls := range x.Lines {
+			parts = append(parts, gtsgeom.NewLineString(nil, cql2CoordsToXY(ls.Coords)))
+		}
+		return gtsgeom.NewMultiLineString(nil, parts...), true
+	case *cql2.MultiPolygon:
+		parts := make([]*gtsgeom.Polygon, 0, len(x.Polys))
+		for _, p := range x.Polys {
+			rings := make([][]gtsgeom.XY, len(p.Rings))
+			for i, r := range p.Rings {
+				rings[i] = cql2CoordsToXY(r)
+			}
+			parts = append(parts, gtsgeom.NewPolygon(nil, rings...))
+		}
+		return gtsgeom.NewMultiPolygon(nil, parts...), true
+	case *cql2.GeometryCollection:
+		members := make([]gtsgeom.Geometry, 0, len(x.Geoms))
+		for _, sub := range x.Geoms {
+			if m, ok := cql2GeomToGTS(sub); ok {
+				members = append(members, m)
+			}
+		}
+		return gtsgeom.NewGeometryCollection(nil, members...), true
+	}
+	return nil, false
+}
+
+func cql2CoordsToXY(in []cql2.Coord) []gtsgeom.XY {
+	out := make([]gtsgeom.XY, len(in))
+	for i, c := range in {
+		out[i] = gtsgeom.XY{X: c.X, Y: c.Y}
+	}
+	return out
 }
 
 // asBBox extracts a bbox [w,s,e,n] from one of: a *stac.Geometry (uses
