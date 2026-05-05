@@ -23,18 +23,17 @@
 package eval
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
-	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
 	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
 	gtspredicate "github.com/exergy-dev/go-topology-suite/predicate"
 
 	"github.com/example/polystac/pkg/cql2"
+	"github.com/example/polystac/pkg/spatial"
 	"github.com/example/polystac/pkg/stac"
 )
 
@@ -549,11 +548,6 @@ func asInterval(v any) ([2]*time.Time, bool) {
 	return [2]*time.Time{}, false
 }
 
-// evalSpatial runs an exact geometric predicate via go-topology-suite.
-// When either side cannot be coerced to a real geometry (or the
-// predicate library returns an error), it falls back to a bbox
-// approximation so older callers and degraded inputs still get a
-// sensible answer.
 func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if len(op.Args) != 2 {
 		return nil, fmt.Errorf("cql2/eval: %s arity", op.Op)
@@ -566,249 +560,50 @@ func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	if lg, lok := asGTSGeom(l, item); lok {
-		if rg, rok := asGTSGeom(r, item); rok {
-			if hit, err := spatialPredicate(op.Op, lg, rg); err == nil {
-				return hit, nil
-			}
-		}
-	}
-
-	// bbox fallback for inputs we can't render as full geometries.
-	lb, lok := asBBox(l, item)
-	rb, rok := asBBox(r, item)
+	lg, lok := asGTSGeom(l, item)
+	rg, rok := asGTSGeom(r, item)
 	if !lok || !rok {
 		return false, nil
 	}
 	switch op.Op {
 	case cql2.OpSIntersects:
-		return bboxIntersect(lb, rb), nil
-	case cql2.OpSWithin:
-		return bboxWithin(lb, rb), nil
-	case cql2.OpSContains:
-		return bboxWithin(rb, lb), nil
+		return gtspredicate.Intersects(lg, rg)
 	case cql2.OpSDisjoint:
-		return !bboxIntersect(lb, rb), nil
+		hit, err := gtspredicate.Intersects(lg, rg)
+		if err != nil {
+			return nil, err
+		}
+		return !hit, nil
+	case cql2.OpSWithin:
+		return gtspredicate.Within(lg, rg)
+	case cql2.OpSContains:
+		return gtspredicate.Contains(lg, rg)
 	}
 	return false, nil
 }
 
-func spatialPredicate(op cql2.Operator, a, b gtsgeom.Geometry) (bool, error) {
-	switch op {
-	case cql2.OpSIntersects:
-		return gtspredicate.Intersects(a, b)
-	case cql2.OpSDisjoint:
-		hit, err := gtspredicate.Intersects(a, b)
-		if err != nil {
-			return false, err
-		}
-		return !hit, nil
-	case cql2.OpSWithin:
-		return gtspredicate.Within(a, b)
-	case cql2.OpSContains:
-		return gtspredicate.Contains(a, b)
-	}
-	return false, fmt.Errorf("unsupported op %s", op)
-}
-
-// asGTSGeom converts an evaluated argument (a *stac.Geometry, a CQL2
-// geometry literal, or an item-bound "geometry" reference) into a
-// go-topology-suite geometry. Returns (nil, false) for non-geometry
-// inputs (e.g. raw bbox slices) which the caller bbox-falls-back.
+// asGTSGeom dispatches on the concrete type that eval produced. It
+// covers every shape eval emits for a spatial argument: a *stac.Geometry
+// (item-bound `geometry` ref), a cql2 geometry literal, a raw bbox
+// slice from BBOX(...), or a fallback to the item's own geometry when
+// no argument shape matches.
 func asGTSGeom(v any, item *stac.Item) (gtsgeom.Geometry, bool) {
 	switch x := v.(type) {
 	case *stac.Geometry:
-		if x == nil {
+		return spatial.FromSTAC(x)
+	case stac.Geometry:
+		return spatial.FromSTAC(&x)
+	case cql2.Geometry:
+		return spatial.FromCQL2(x)
+	case []float64:
+		if len(x) < 4 {
 			return nil, false
 		}
-		return stacGeomToGTS(x)
-	case stac.Geometry:
-		return stacGeomToGTS(&x)
-	case cql2.Geometry:
-		return cql2GeomToGTS(x)
+		return spatial.BBoxPolygon(x[0], x[1], x[2], x[3]), true
 	}
 	if item != nil && item.Geometry != nil {
-		return stacGeomToGTS(item.Geometry)
+		return spatial.FromSTAC(item.Geometry)
 	}
 	return nil, false
 }
 
-func stacGeomToGTS(g *stac.Geometry) (gtsgeom.Geometry, bool) {
-	if g == nil {
-		return nil, false
-	}
-	raw, err := json.Marshal(g)
-	if err != nil {
-		return nil, false
-	}
-	parsed, err := gtsgeojson.Unmarshal(raw)
-	if err != nil {
-		return nil, false
-	}
-	return parsed, true
-}
-
-func cql2GeomToGTS(g cql2.Geometry) (gtsgeom.Geometry, bool) {
-	switch x := g.(type) {
-	case *cql2.Point:
-		if x.Empty {
-			return nil, false
-		}
-		return gtsgeom.NewPoint(nil, gtsgeom.XY{X: x.Coord.X, Y: x.Coord.Y}), true
-	case *cql2.LineString:
-		return gtsgeom.NewLineString(nil, cql2CoordsToXY(x.Coords)), true
-	case *cql2.Polygon:
-		rings := make([][]gtsgeom.XY, len(x.Rings))
-		for i, r := range x.Rings {
-			rings[i] = cql2CoordsToXY(r)
-		}
-		return gtsgeom.NewPolygon(nil, rings...), true
-	case *cql2.MultiPoint:
-		pts := make([]gtsgeom.XY, 0, len(x.Points))
-		for _, p := range x.Points {
-			if p.Empty {
-				continue
-			}
-			pts = append(pts, gtsgeom.XY{X: p.Coord.X, Y: p.Coord.Y})
-		}
-		return gtsgeom.NewMultiPoint(nil, pts), true
-	case *cql2.MultiLineString:
-		parts := make([]*gtsgeom.LineString, 0, len(x.Lines))
-		for _, ls := range x.Lines {
-			parts = append(parts, gtsgeom.NewLineString(nil, cql2CoordsToXY(ls.Coords)))
-		}
-		return gtsgeom.NewMultiLineString(nil, parts...), true
-	case *cql2.MultiPolygon:
-		parts := make([]*gtsgeom.Polygon, 0, len(x.Polys))
-		for _, p := range x.Polys {
-			rings := make([][]gtsgeom.XY, len(p.Rings))
-			for i, r := range p.Rings {
-				rings[i] = cql2CoordsToXY(r)
-			}
-			parts = append(parts, gtsgeom.NewPolygon(nil, rings...))
-		}
-		return gtsgeom.NewMultiPolygon(nil, parts...), true
-	case *cql2.GeometryCollection:
-		members := make([]gtsgeom.Geometry, 0, len(x.Geoms))
-		for _, sub := range x.Geoms {
-			if m, ok := cql2GeomToGTS(sub); ok {
-				members = append(members, m)
-			}
-		}
-		return gtsgeom.NewGeometryCollection(nil, members...), true
-	}
-	return nil, false
-}
-
-func cql2CoordsToXY(in []cql2.Coord) []gtsgeom.XY {
-	out := make([]gtsgeom.XY, len(in))
-	for i, c := range in {
-		out[i] = gtsgeom.XY{X: c.X, Y: c.Y}
-	}
-	return out
-}
-
-// asBBox extracts a bbox [w,s,e,n] from one of: a *stac.Geometry (uses
-// the item's bbox when available, otherwise computes it), a
-// cql2.Geometry literal, a coordinate slice, or the item's geometry
-// property.
-func asBBox(v any, item *stac.Item) ([4]float64, bool) {
-	switch x := v.(type) {
-	case []float64:
-		if len(x) >= 4 {
-			return [4]float64{x[0], x[1], x[2], x[3]}, true
-		}
-	case *stac.Geometry:
-		if item != nil && len(item.BBox) >= 4 {
-			return [4]float64{item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3]}, true
-		}
-		return x.BBox()
-	case stac.Geometry:
-		return x.BBox()
-	}
-	if g, ok := v.(cql2.Geometry); ok {
-		return cql2GeometryBBox(g)
-	}
-	if item != nil && len(item.BBox) >= 4 {
-		return [4]float64{item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3]}, true
-	}
-	return [4]float64{}, false
-}
-
-func cql2GeometryBBox(g cql2.Geometry) ([4]float64, bool) {
-	mn := [2]float64{math.Inf(1), math.Inf(1)}
-	mx := [2]float64{math.Inf(-1), math.Inf(-1)}
-	saw := false
-	visit := func(c cql2.Coord) {
-		if c.X < mn[0] {
-			mn[0] = c.X
-		}
-		if c.Y < mn[1] {
-			mn[1] = c.Y
-		}
-		if c.X > mx[0] {
-			mx[0] = c.X
-		}
-		if c.Y > mx[1] {
-			mx[1] = c.Y
-		}
-		saw = true
-	}
-	var walk func(g cql2.Geometry)
-	walk = func(g cql2.Geometry) {
-		switch x := g.(type) {
-		case *cql2.Point:
-			if !x.Empty {
-				visit(x.Coord)
-			}
-		case *cql2.LineString:
-			for _, c := range x.Coords {
-				visit(c)
-			}
-		case *cql2.Polygon:
-			for _, r := range x.Rings {
-				for _, c := range r {
-					visit(c)
-				}
-			}
-		case *cql2.MultiPoint:
-			for _, p := range x.Points {
-				if !p.Empty {
-					visit(p.Coord)
-				}
-			}
-		case *cql2.MultiLineString:
-			for _, ls := range x.Lines {
-				for _, c := range ls.Coords {
-					visit(c)
-				}
-			}
-		case *cql2.MultiPolygon:
-			for _, p := range x.Polys {
-				for _, r := range p.Rings {
-					for _, c := range r {
-						visit(c)
-					}
-				}
-			}
-		case *cql2.GeometryCollection:
-			for _, sub := range x.Geoms {
-				walk(sub)
-			}
-		}
-	}
-	walk(g)
-	if !saw {
-		return [4]float64{}, false
-	}
-	return [4]float64{mn[0], mn[1], mx[0], mx[1]}, true
-}
-
-func bboxIntersect(a, b [4]float64) bool {
-	return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
-}
-
-func bboxWithin(inner, outer [4]float64) bool {
-	return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
-}

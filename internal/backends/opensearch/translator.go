@@ -7,10 +7,10 @@ import (
 	"time"
 
 	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
-	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
 
 	"github.com/example/polystac/pkg/cql2"
 	"github.com/example/polystac/pkg/repository"
+	"github.com/example/polystac/pkg/spatial"
 	"github.com/example/polystac/pkg/stac"
 )
 
@@ -538,11 +538,11 @@ func geometryShape(g *stac.Geometry) any {
 }
 
 // geometryFromCQL2 converts any CQL2 geometry literal into the GeoJSON
-// map shape OpenSearch's geo_shape query accepts. Goes through
-// go-topology-suite so all GeoJSON types (including GeometryCollection,
-// MultiPoint, MultiLineString, MultiPolygon) are covered.
+// map OpenSearch's geo_shape query accepts. The JSON round-trip is
+// the simplest way to land on map[string]any from a gts.Geometry; gts
+// has no direct map encoder.
 func geometryFromCQL2(g cql2.Geometry) any {
-	gg, ok := cql2GeomToGTS(g)
+	gg, ok := spatial.FromCQL2(g)
 	if !ok {
 		return nil
 	}
@@ -553,69 +553,6 @@ func geometryFromCQL2(g cql2.Geometry) any {
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil
-	}
-	return out
-}
-
-// cql2GeomToGTS recursively translates a CQL2 geometry literal into
-// the equivalent go-topology-suite type. Returns (nil, false) on
-// unsupported / empty inputs.
-func cql2GeomToGTS(g cql2.Geometry) (gtsgeom.Geometry, bool) {
-	switch x := g.(type) {
-	case *cql2.Point:
-		if x.Empty {
-			return nil, false
-		}
-		return gtsgeom.NewPoint(nil, gtsgeom.XY{X: x.Coord.X, Y: x.Coord.Y}), true
-	case *cql2.LineString:
-		return gtsgeom.NewLineString(nil, cql2CoordsToXY(x.Coords)), true
-	case *cql2.Polygon:
-		rings := make([][]gtsgeom.XY, len(x.Rings))
-		for i, r := range x.Rings {
-			rings[i] = cql2CoordsToXY(r)
-		}
-		return gtsgeom.NewPolygon(nil, rings...), true
-	case *cql2.MultiPoint:
-		pts := make([]gtsgeom.XY, 0, len(x.Points))
-		for _, p := range x.Points {
-			if p.Empty {
-				continue
-			}
-			pts = append(pts, gtsgeom.XY{X: p.Coord.X, Y: p.Coord.Y})
-		}
-		return gtsgeom.NewMultiPoint(nil, pts), true
-	case *cql2.MultiLineString:
-		parts := make([]*gtsgeom.LineString, 0, len(x.Lines))
-		for _, ls := range x.Lines {
-			parts = append(parts, gtsgeom.NewLineString(nil, cql2CoordsToXY(ls.Coords)))
-		}
-		return gtsgeom.NewMultiLineString(nil, parts...), true
-	case *cql2.MultiPolygon:
-		parts := make([]*gtsgeom.Polygon, 0, len(x.Polys))
-		for _, p := range x.Polys {
-			rings := make([][]gtsgeom.XY, len(p.Rings))
-			for i, r := range p.Rings {
-				rings[i] = cql2CoordsToXY(r)
-			}
-			parts = append(parts, gtsgeom.NewPolygon(nil, rings...))
-		}
-		return gtsgeom.NewMultiPolygon(nil, parts...), true
-	case *cql2.GeometryCollection:
-		members := make([]gtsgeom.Geometry, 0, len(x.Geoms))
-		for _, sub := range x.Geoms {
-			if m, ok := cql2GeomToGTS(sub); ok {
-				members = append(members, m)
-			}
-		}
-		return gtsgeom.NewGeometryCollection(nil, members...), true
-	}
-	return nil, false
-}
-
-func cql2CoordsToXY(in []cql2.Coord) []gtsgeom.XY {
-	out := make([]gtsgeom.XY, len(in))
-	for i, c := range in {
-		out[i] = gtsgeom.XY{X: c.X, Y: c.Y}
 	}
 	return out
 }
