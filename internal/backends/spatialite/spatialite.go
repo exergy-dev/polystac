@@ -18,9 +18,7 @@ func init() {
 	backends.Register(backendName, Open)
 }
 
-// Open is the registry constructor. It reads the POLYSTAC_SPATIALITE_*
-// subtree from the *config.Config, opens the database, loads
-// mod_spatialite, runs migrations, and returns the Repository.
+// Open is the registry constructor.
 func Open(ctx context.Context, anyCfg any) (repository.Repository, error) {
 	cfg, ok := anyCfg.(*config.Config)
 	if !ok {
@@ -55,7 +53,6 @@ type Repo struct {
 	cfg dbConfig
 }
 
-// Capabilities reports the SpatiaLite feature set.
 func (r *Repo) Capabilities() repository.Capabilities {
 	return repository.Capabilities{
 		Backend:                  backendName,
@@ -75,15 +72,6 @@ func (r *Repo) Capabilities() repository.Capabilities {
 	}
 }
 
-// Health is a cheap connectivity probe.
-func (r *Repo) Health(ctx context.Context) error {
-	return r.db.PingContext(ctx)
-}
+func (r *Repo) Health(ctx context.Context) error { return r.db.PingContext(ctx) }
 
-// Close releases the underlying connection pool.
-func (r *Repo) Close() error {
-	if r.db != nil {
-		return r.db.Close()
-	}
-	return nil
-}
+func (r *Repo) Close() error { return r.db.Close() }

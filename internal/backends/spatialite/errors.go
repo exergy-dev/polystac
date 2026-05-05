@@ -13,9 +13,6 @@ import (
 	"github.com/example/polystac/pkg/repository"
 )
 
-// mapSQLiteErr translates driver / database errors into the sentinel
-// errors callers above repository.Repository expect. Returns nil on nil
-// input.
 func mapSQLiteErr(err error, ctxStr string) error {
 	if err == nil {
 		return nil
@@ -27,13 +24,9 @@ func mapSQLiteErr(err error, ctxStr string) error {
 	if errors.As(err, &sqliteErr) {
 		switch sqliteErr.Code {
 		case sqlite3.ErrConstraint:
-			// PK / UNIQUE / FK violations.
 			return fmt.Errorf("%s: %w", ctxStr, repository.ErrConflict)
 		case sqlite3.ErrBusy, sqlite3.ErrLocked:
 			return fmt.Errorf("%s: %w", ctxStr, repository.ErrBackendUnavailable)
-		case sqlite3.ErrMisuse, sqlite3.ErrError:
-			// Fall through to the message-based heuristics — this
-			// covers, e.g., "no such column" surfaced by ErrError.
 		}
 	}
 	msg := strings.ToLower(err.Error())

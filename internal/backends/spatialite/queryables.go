@@ -9,9 +9,6 @@ import (
 	"github.com/example/polystac/pkg/repository"
 )
 
-// Queryables introspects the items table to enumerate property keys
-// observed under the (optional) collection. Returns a JSON-Schema-shaped
-// document compatible with the inmem backend's output.
 func (r *Repo) Queryables(ctx context.Context, collectionID string) (*repository.QueryablesDocument, error) {
 	props := map[string]any{
 		"id":         map[string]any{"type": "string"},

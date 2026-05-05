@@ -16,13 +16,12 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// SchemaVersion is the version this binary expects after running all
-// embedded migrations. Bump when adding a migrations/0NNN_*.sql file.
-const SchemaVersion = 1
+// SchemaVersion is bumped whenever a migrations/0NNN_*.sql file is added.
+const SchemaVersion = 2
 
-// runMigrations brings the schema up to SchemaVersion. Idempotent. Each
-// migration runs in BEGIN IMMEDIATE so concurrent first-starts (e.g.,
-// two PolyStac instances pointing at the same file) serialize cleanly.
+// runMigrations brings the schema up to SchemaVersion. Concurrent
+// first-starts against the same DB file serialize on busy_timeout;
+// later starters read MAX(version) and skip already-applied entries.
 func runMigrations(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx,
 		`CREATE TABLE IF NOT EXISTS polystac_schema (
@@ -69,12 +68,6 @@ func applyMigration(ctx context.Context, db *sql.DB, version int, body string) e
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		// We're already inside database/sql's transaction — BEGIN
-		// IMMEDIATE inside it would error. Instead, take an immediate
-		// lock by writing to polystac_schema first; if another writer
-		// is mid-migration, busy_timeout serializes us.
-	}
 	if _, err := tx.ExecContext(ctx, body); err != nil {
 		return err
 	}
@@ -84,8 +77,6 @@ func applyMigration(ctx context.Context, db *sql.DB, version int, body string) e
 	return tx.Commit()
 }
 
-// currentSchemaVersion returns the highest applied version, or 0 when
-// none have been applied yet.
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var v sql.NullInt64
 	err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM polystac_schema`).Scan(&v)
@@ -95,8 +86,6 @@ func currentSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return int(v.Int64), nil
 }
 
-// versionFromFilename parses the leading int from "0001_init.sql" → 1.
-// Returns 0 on a name that does not match the prefix convention.
 func versionFromFilename(name string) int {
 	i := strings.IndexByte(name, '_')
 	if i <= 0 {
@@ -110,27 +99,19 @@ func versionFromFilename(name string) int {
 }
 
 // ensureGeometryAndIndex installs the SpatiaLite geometry column and
-// R-Tree spatial index. Both calls require mod_spatialite to be loaded.
-// Idempotent: re-running on a populated database is a no-op (the
-// extension's own checks short-circuit duplicate column / index).
+// R-Tree on the items table. Idempotent; safe to call on every Open.
 func ensureGeometryAndIndex(ctx context.Context, db *sql.DB) error {
-	// InitSpatialMetadata is required once per database to populate the
-	// SpatiaLite metadata tables. Safe to call repeatedly. The "1"
-	// argument enables the WGS84-only fast path and skips the very
-	// large SRS dictionary.
+	// InitSpatialMetadata is required once per database. The "1"
+	// argument selects the WGS84-only fast path (skips the large SRS
+	// dictionary). On an already-populated DB it returns NULL rather
+	// than erroring; tolerate that by probing spatial_ref_sys.
 	if _, err := db.ExecContext(ctx, `SELECT InitSpatialMetadata(1)`); err != nil {
-		// On an existing database InitSpatialMetadata is a no-op but
-		// returns NULL rather than erroring. Tolerate any error here
-		// only if the spatial_ref_sys table is already populated.
 		var n int
 		if probe := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM spatial_ref_sys`).Scan(&n); probe != nil {
 			return fmt.Errorf("spatialite: InitSpatialMetadata: %w", err)
 		}
 	}
 
-	// AddGeometryColumn is idempotent at the SQL level when
-	// geometry_columns already records the column; double-check before
-	// calling to avoid a noisy error in some SpatiaLite builds.
 	var hasGeom int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM geometry_columns
@@ -146,9 +127,6 @@ func ensureGeometryAndIndex(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
-	// CreateSpatialIndex is also idempotent in modern SpatiaLite, but
-	// we probe for the rtree to make the intent explicit and the error
-	// message clearer.
 	var hasIdx int
 	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master

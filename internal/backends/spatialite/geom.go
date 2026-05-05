@@ -9,11 +9,10 @@ import (
 	"github.com/example/polystac/pkg/stac"
 )
 
-// geomToWKT converts a STAC GeoJSON geometry into a WKT string suitable
-// for binding into GeomFromText(?, 4326). Returns ("", false) when the
-// geometry is unsupported (e.g., an empty or malformed coordinate
-// payload). For unsupported shapes the caller falls back to bbox-only
-// filtering.
+// geomToWKT renders a STAC GeoJSON geometry as WKT for binding into
+// GeomFromText(?, 4326). Returns ("", false) when the shape isn't
+// directly representable (GeometryCollection, unknown types, malformed
+// coords); callers fall back to bbox-only filtering.
 func geomToWKT(g *stac.Geometry) (string, bool) {
 	if g == nil {
 		return "", false
@@ -30,13 +29,13 @@ func geomToWKT(g *stac.Geometry) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		return "MULTIPOINT(" + joinCoords(coords, false) + ")", true
+		return "MULTIPOINT(" + joinCoords(coords) + ")", true
 	case stac.GeometryLineString:
 		coords, ok := asCoordSlice(g.Coordinates)
 		if !ok {
 			return "", false
 		}
-		return "LINESTRING(" + joinCoords(coords, false) + ")", true
+		return "LINESTRING(" + joinCoords(coords) + ")", true
 	case stac.GeometryPolygon:
 		rings, ok := asRings(g.Coordinates)
 		if !ok {
@@ -50,7 +49,7 @@ func geomToWKT(g *stac.Geometry) (string, bool) {
 		}
 		parts := make([]string, len(ls))
 		for i, r := range ls {
-			parts[i] = "(" + joinCoords(r, false) + ")"
+			parts[i] = "(" + joinCoords(r) + ")"
 		}
 		return "MULTILINESTRING(" + strings.Join(parts, ",") + ")", true
 	case stac.GeometryMultiPolygon:
@@ -64,27 +63,28 @@ func geomToWKT(g *stac.Geometry) (string, bool) {
 		}
 		return "MULTIPOLYGON(" + strings.Join(parts, ",") + ")", true
 	}
-	// GeometryCollection and unknown types fall back to bbox-only.
 	return "", false
 }
 
-// bboxToWKT renders a 4-element [west, south, east, north] bbox as a
-// closed POLYGON WKT. Used to bind a Search.BBox into a SpatiaLite
-// spatial predicate.
+// bboxToWKT renders [west, south, east, north] as a closed POLYGON WKT.
 func bboxToWKT(bb []float64) (string, bool) {
 	if len(bb) < 4 {
 		return "", false
 	}
-	w, s, e, n := bb[0], bb[1], bb[2], bb[3]
-	return fmt.Sprintf(
-		"POLYGON((%s %s,%s %s,%s %s,%s %s,%s %s))",
-		f(w), f(s), f(e), f(s), f(e), f(n), f(w), f(n), f(w), f(s),
-	), true
+	return bboxPolygonWKT(bb[0], bb[1], bb[2], bb[3]), true
 }
 
-// itemBBox returns the [west, south, east, north] bounding box for an
-// item, preferring the explicit Item.BBox over a derived one. Returns
-// ([4]float64{}, false) when no usable extent is available.
+func bboxPolygonWKT(w, s, e, n float64) string {
+	return fmt.Sprintf(
+		"POLYGON((%s %s,%s %s,%s %s,%s %s,%s %s))",
+		fmtFloat(w), fmtFloat(s),
+		fmtFloat(e), fmtFloat(s),
+		fmtFloat(e), fmtFloat(n),
+		fmtFloat(w), fmtFloat(n),
+		fmtFloat(w), fmtFloat(s),
+	)
+}
+
 func itemBBox(it *stac.Item) ([4]float64, bool) {
 	if len(it.BBox) >= 4 {
 		return [4]float64{it.BBox[0], it.BBox[1], it.BBox[2], it.BBox[3]}, true
@@ -97,7 +97,8 @@ func itemBBox(it *stac.Item) ([4]float64, bool) {
 	return [4]float64{}, false
 }
 
-// ----- coordinate decoders (GeoJSON allows []float64 OR []any) ----------
+// GeoJSON allows coordinates as either []float64 or []any depending on
+// how the JSON decoded; the asXxx helpers normalize both.
 
 func asCoord(v any) ([2]float64, bool) {
 	switch c := v.(type) {
@@ -201,9 +202,7 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// ----- formatting helpers ----------
-
-func joinCoords(cs [][2]float64, _ bool) string {
+func joinCoords(cs [][2]float64) string {
 	parts := make([]string, len(cs))
 	for i, c := range cs {
 		parts[i] = fmtCoord(c)
@@ -214,13 +213,11 @@ func joinCoords(cs [][2]float64, _ bool) string {
 func joinRings(rings [][][2]float64) string {
 	parts := make([]string, len(rings))
 	for i, r := range rings {
-		parts[i] = "(" + joinCoords(r, false) + ")"
+		parts[i] = "(" + joinCoords(r) + ")"
 	}
 	return strings.Join(parts, ",")
 }
 
-func fmtCoord(c [2]float64) string { return f(c[0]) + " " + f(c[1]) }
+func fmtCoord(c [2]float64) string { return fmtFloat(c[0]) + " " + fmtFloat(c[1]) }
 
-// f formats a float without an unhelpful exponent for the small range
-// of lon/lat values we see in practice.
-func f(v float64) string { return fmt.Sprintf("%g", v) }
+func fmtFloat(v float64) string { return fmt.Sprintf("%g", v) }

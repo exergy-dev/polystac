@@ -13,7 +13,6 @@ import (
 	"github.com/example/polystac/pkg/stac"
 )
 
-// Search runs the requested item search against the items table.
 func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repository.Page[*stac.Item], error) {
 	where := []string{}
 	args := []any{}
@@ -31,14 +30,12 @@ func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repos
 		}
 	}
 	if len(req.BBox) >= 4 {
-		// Cheap bbox-overlap filter on the cached corner columns. This
-		// also acts as the pre-filter for ST_Intersects when geometries
-		// cover only the columns we cached.
+		// Cheap bbox-overlap pre-filter on cached corner columns; the
+		// ST_Intersects refinement below uses the R-Tree.
 		w, s, e, n := req.BBox[0], req.BBox[1], req.BBox[2], req.BBox[3]
 		where = append(where,
 			"items.bbox_xmin <= ? AND items.bbox_xmax >= ? AND items.bbox_ymin <= ? AND items.bbox_ymax >= ?")
 		args = append(args, e, w, n, s)
-		// Refine with a true ST_Intersects when we can render WKT.
 		if wkt, ok := bboxToWKT(req.BBox); ok {
 			where = append(where, "(items.geom IS NULL OR ST_Intersects(items.geom, GeomFromText(?, 4326)) = 1)")
 			args = append(args, wkt)
@@ -49,7 +46,8 @@ func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repos
 			where = append(where, "ST_Intersects(items.geom, GeomFromText(?, 4326)) = 1")
 			args = append(args, wkt)
 		} else if bb, ok := req.Intersects.BBox(); ok {
-			// Fallback: bbox approximation matches the inmem oracle.
+			// WKT fallback for shapes geomToWKT doesn't render: bbox
+			// approximation, matching the inmem oracle's behavior.
 			where = append(where,
 				"items.bbox_xmin <= ? AND items.bbox_xmax >= ? AND items.bbox_ymin <= ? AND items.bbox_ymax >= ?")
 			args = append(args, bb[2], bb[0], bb[3], bb[1])
@@ -98,8 +96,6 @@ func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repos
 		return nil, err
 	}
 
-	// Apply keyset cursor (after the rest of the WHERE so OFFSET-style
-	// callers without a token still see the unfiltered set).
 	cur, err := decodeSearchToken(req.Token)
 	if err != nil {
 		return nil, fmt.Errorf("spatialite: bad token: %w", repository.ErrInvalidInput)
@@ -129,9 +125,9 @@ func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repos
 	defer rows.Close()
 
 	type scanned struct {
-		id, collection string
-		datetime       string
-		item           *stac.Item
+		id       string
+		datetime string
+		item     *stac.Item
 	}
 	scannedRows := make([]scanned, 0, limit+1)
 	for rows.Next() {
@@ -151,13 +147,12 @@ func (r *Repo) Search(ctx context.Context, req repository.SearchRequest) (*repos
 		if dt != nil {
 			dtStr = *dt
 		}
-		scannedRows = append(scannedRows, scanned{id: id, collection: collection, datetime: dtStr, item: &it})
+		scannedRows = append(scannedRows, scanned{id: id, datetime: dtStr, item: &it})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapSQLiteErr(err, "spatialite: iter")
 	}
 
-	// Exact count: same WHERE, run separately.
 	var matched int64
 	countSQL := "SELECT COUNT(*) FROM items" + whereSQL
 	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&matched); err != nil {
@@ -185,9 +180,8 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// queryToSQL emits the SQL for one Query-extension predicate. Mirrors
-// the inmem semantics: missing values fail Eq/Neq/range and pass
-// IsNull. Returns ("", nil) if the predicate is empty.
+// queryToSQL emits SQL for one Query-extension predicate. Returns
+// ("", nil) when the predicate is empty.
 func queryToSQL(field string, p repository.Predicate) (string, []any) {
 	col := mapColumn(field)
 	parts := []string{}
@@ -243,10 +237,9 @@ func escapeLike(s string) string {
 	return r.Replace(s)
 }
 
-// buildOrder returns ("ORDER BY ...", normalizedSortBys). The
-// normalized list always tiebreaks on items.id so the keyset cursor
-// stays unique. If req.SortBy is empty, we sort by datetime DESC, id
-// ASC — same default as the opensearch backend.
+// buildOrder returns ("ORDER BY ...", normalizedSortBys). The returned
+// sort list always ends in `id ASC` so the keyset cursor is unique.
+// Default sort matches the opensearch backend: datetime DESC, id ASC.
 func buildOrder(in []repository.SortClause) (string, []repository.SortClause, error) {
 	if len(in) == 0 {
 		return "ORDER BY items.datetime DESC, items.id ASC",
@@ -276,13 +269,9 @@ func buildOrder(in []repository.SortClause) (string, []repository.SortClause, er
 	return "ORDER BY " + strings.Join(parts, ", "), out, nil
 }
 
-// keysetWhere emits the keyset predicate that resumes after `cur` for
-// the supplied (already-tiebreak-augmented) sort. The cursor is
-// produced by encodeSearchToken on the final row of the prior page.
-//
-// Implementation note: we hand-code the leading-key + id-tiebreak case
-// (the only one we actually emit today), and fall back to a wider
-// `id > cur.id` predicate for unusual sort orders.
+// keysetWhere emits the keyset predicate that resumes after `cur`. We
+// hand-code the leading-key + id-tiebreak case (the only one we
+// actually emit) and fall back to `id > cur.id` for unusual sorts.
 func keysetWhere(sortBys []repository.SortClause, cur searchCursor) (string, []any) {
 	if len(sortBys) == 0 {
 		return "", nil
@@ -290,9 +279,7 @@ func keysetWhere(sortBys []repository.SortClause, cur searchCursor) (string, []a
 	first := sortBys[0]
 	switch first.Field {
 	case "datetime":
-		// Default ordering: datetime DESC, id ASC.
 		if first.Direction == repository.SortDesc {
-			// (datetime < cur.dt) OR (datetime = cur.dt AND id > cur.id)
 			return "(items.datetime < ? OR (items.datetime IS ? AND items.id > ?))",
 				[]any{cur.Datetime, cur.Datetime, cur.ID}
 		}
@@ -304,6 +291,5 @@ func keysetWhere(sortBys []repository.SortClause, cur searchCursor) (string, []a
 		}
 		return "items.id > ?", []any{cur.ID}
 	}
-	// Wider fallback: tiebreak only.
 	return "items.id > ?", []any{cur.ID}
 }

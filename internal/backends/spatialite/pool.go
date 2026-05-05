@@ -13,20 +13,15 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// dbConfig is the small subset of SpatiaLite knobs PolyStac surfaces via
-// configuration. Anything else can be set in the DSN.
 type dbConfig struct {
-	Database      string // file path (required)
-	PoolMax       int    // sql.DB.MaxOpenConns; 1 enforces single-writer regime
-	CacheKB       int    // PRAGMA cache_size=-<n> (KiB); 0 = driver default
-	MmapSizeBytes int64  // PRAGMA mmap_size; default 256 MiB
-	BusyTimeoutMS int    // _busy_timeout query param; default 5000
-	ExtensionPath string // overrides the mod_spatialite library name/path
+	Database      string
+	PoolMax       int
+	CacheKB       int
+	MmapSizeBytes int64
+	BusyTimeoutMS int
+	ExtensionPath string
 }
 
-// configFromMap pulls dbConfig from the lowercase backend env subtree
-// produced by internal/config (POLYSTAC_SPATIALITE_* → keys without the
-// prefix).
 func configFromMap(env map[string]string) (dbConfig, error) {
 	c := dbConfig{
 		PoolMax:       1,
@@ -75,18 +70,15 @@ func configFromMap(env map[string]string) (dbConfig, error) {
 	return c, nil
 }
 
-// Each (extensionPath) gets its own database/sql driver name registered
-// once via sync.Once so concurrent Open() calls don't race on
-// sql.Register (which panics on duplicates).
 var (
 	driverMu       sync.Mutex
-	driverRegistry = map[string]string{} // extensionPath → driver name
+	driverRegistry = map[string]string{}
 	driverSeq      int
 )
 
-// registerDriver returns a database/sql driver name configured to load
-// the given mod_spatialite library on every new connection. Subsequent
-// calls with the same path return the cached name.
+// registerDriver memoizes a database/sql driver per extension path. The
+// global driver name space is set-only (sql.Register panics on dupes),
+// so we cache the name we've registered for each path.
 func registerDriver(extPath string) string {
 	driverMu.Lock()
 	defer driverMu.Unlock()
@@ -97,11 +89,9 @@ func registerDriver(extPath string) string {
 	name := fmt.Sprintf("sqlite3_polystac_%d", driverSeq)
 	sql.Register(name, &sqlite3.SQLiteDriver{
 		ConnectHook: func(c *sqlite3.SQLiteConn) error {
-			// Load mod_spatialite on every new connection. mattn's
-			// LoadExtension passes the entry argument as a non-null
-			// empty C string when given "", which makes SQLite look
-			// up the symbol "" rather than its default; name the
-			// canonical entry explicitly.
+			// mattn's LoadExtension passes "" as a non-null empty C
+			// string for the entry symbol, so SQLite looks up "" rather
+			// than its default. Name the canonical entry explicitly.
 			return c.LoadExtension(extPath, "sqlite3_modspatialite_init")
 		},
 	})
@@ -109,9 +99,6 @@ func registerDriver(extPath string) string {
 	return name
 }
 
-// openDB opens the SpatiaLite database with WAL mode, foreign keys on,
-// and a configured busy timeout. The returned *sql.DB owns the
-// underlying connections; the caller must Close it on shutdown.
 func openDB(_ context.Context, dc dbConfig) (*sql.DB, error) {
 	driver := registerDriver(dc.ExtensionPath)
 	dsn := fmt.Sprintf(
@@ -128,11 +115,9 @@ func openDB(_ context.Context, dc dbConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-// applyPragmas runs the post-open PRAGMA tuning that depends on
-// dbConfig. Run after Open + extension load + migrations.
 func applyPragmas(ctx context.Context, db *sql.DB, dc dbConfig) error {
 	if dc.CacheKB > 0 {
-		// Negative argument to cache_size is in KiB; positive is in pages.
+		// Negative cache_size argument is in KiB; positive is in pages.
 		if _, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA cache_size=-%d`, dc.CacheKB)); err != nil {
 			return fmt.Errorf("spatialite: pragma cache_size: %w", err)
 		}
@@ -145,9 +130,6 @@ func applyPragmas(ctx context.Context, db *sql.DB, dc dbConfig) error {
 	return nil
 }
 
-// pingExtension verifies mod_spatialite is loaded by calling a function
-// only the extension provides. Returns a clear error pointing operators
-// at the missing shared library.
 func pingExtension(ctx context.Context, db *sql.DB) error {
 	var v string
 	if err := db.QueryRowContext(ctx, `SELECT spatialite_version()`).Scan(&v); err != nil {

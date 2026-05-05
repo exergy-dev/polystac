@@ -9,8 +9,6 @@ import (
 	"strconv"
 )
 
-// encodeListToken / decodeListToken: simple offset cursor for
-// ListCollections (collections are bounded — keyset is overkill).
 func encodeListToken(n int) string {
 	if n <= 0 {
 		return ""

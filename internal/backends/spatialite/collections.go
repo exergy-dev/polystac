@@ -13,7 +13,6 @@ import (
 	"github.com/example/polystac/pkg/stac"
 )
 
-// GetCollection reads a single collection by ID.
 func (r *Repo) GetCollection(ctx context.Context, id string) (*stac.Collection, error) {
 	var body []byte
 	err := r.db.QueryRowContext(ctx, `SELECT body FROM collections WHERE id = ?`, id).Scan(&body)
@@ -30,9 +29,6 @@ func (r *Repo) GetCollection(ctx context.Context, id string) (*stac.Collection, 
 	return &c, nil
 }
 
-// ListCollections returns a deterministic page of collections sorted by
-// id ascending. Token format is the same opaque "offset:N" used by
-// pgstac's collection list.
 func (r *Repo) ListCollections(ctx context.Context, opts repository.ListCollectionsOptions) (*repository.Page[*stac.Collection], error) {
 	limit := opts.Limit
 	if limit <= 0 || limit > 1000 {
@@ -85,7 +81,6 @@ func (r *Repo) ListCollections(ctx context.Context, opts repository.ListCollecti
 	return page, nil
 }
 
-// UpsertCollection inserts or replaces a collection by id.
 func (r *Repo) UpsertCollection(ctx context.Context, c *stac.Collection) error {
 	if c == nil || c.ID == "" {
 		return fmt.Errorf("spatialite: collection.id required: %w", repository.ErrInvalidInput)
@@ -104,8 +99,7 @@ func (r *Repo) UpsertCollection(ctx context.Context, c *stac.Collection) error {
 	return mapSQLiteErr(err, "spatialite: upsert_collection "+c.ID)
 }
 
-// DeleteCollection removes a collection. Item rows are removed via the
-// FK ON DELETE CASCADE.
+// DeleteCollection cascades to items via the FK ON DELETE CASCADE.
 func (r *Repo) DeleteCollection(ctx context.Context, id string) error {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM collections WHERE id = ?`, id)
 	if err != nil {

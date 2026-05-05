@@ -11,18 +11,16 @@ import (
 	"github.com/example/polystac/pkg/cql2"
 )
 
-const backendID = "spatialite"
-
-// translateFilter walks a CQL2 AST and produces a parameterized SQL
-// fragment plus its argument list. Unsupported nodes return a
-// *cql2.TranslationError so the service layer can map to HTTP 400.
+// translateFilter walks a CQL2 AST into a parameterized SQL fragment.
+// Untranslatable nodes return *cql2.TranslationError so the service
+// layer can map them to HTTP 400.
 func translateFilter(e cql2.Expression) (string, []any, error) {
 	switch n := e.(type) {
 	case *cql2.Op:
 		return translateOp(n)
 	}
 	return "", nil, &cql2.TranslationError{
-		Backend: backendID,
+		Backend: backendName,
 		Reason:  fmt.Sprintf("top-level node type %T not allowed", e),
 	}
 }
@@ -74,8 +72,8 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		if val == nil {
 			return col + " IS NOT NULL", nil, nil
 		}
-		// `IS NOT ?` treats NULL as not-equal-to-non-null, which is
-		// the parity-safe choice for STAC searches.
+		// IS NOT ? treats NULL as not-equal-to-non-null, the parity-safe
+		// choice for STAC searches against optional properties.
 		return col + " IS NOT ?", []any{val}, nil
 
 	case cql2.OpLt, cql2.OpLte, cql2.OpGt, cql2.OpGte:
@@ -94,7 +92,7 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		}
 		col, ok := propRef(op.Args[0])
 		if !ok {
-			return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "first arg must be a property"}
+			return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "first arg must be a property"}
 		}
 		lo, err := literalValue(op.Args[1])
 		if err != nil {
@@ -112,7 +110,7 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		}
 		col, ok := propRef(op.Args[0])
 		if !ok {
-			return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "first arg must be a property"}
+			return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "first arg must be a property"}
 		}
 		var values []any
 		for _, a := range op.Args[1:] {
@@ -135,8 +133,7 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		if len(values) == 0 {
 			return "0", nil, nil
 		}
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(values)), ",")
-		return mapColumn(col) + " IN (" + ph + ")", values, nil
+		return mapColumn(col) + " IN (" + placeholders(len(values)) + ")", values, nil
 
 	case cql2.OpLike:
 		if len(op.Args) != 2 {
@@ -144,13 +141,12 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		}
 		col, ok := propRef(op.Args[0])
 		if !ok {
-			return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "first arg must be a property"}
+			return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "first arg must be a property"}
 		}
 		pat, ok := stringLit(op.Args[1])
 		if !ok {
-			return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "second arg must be a string literal"}
+			return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "second arg must be a string literal"}
 		}
-		// CQL2 wildcards %/_ map directly to SQL LIKE wildcards.
 		return mapColumn(col) + " LIKE ?", []any{pat}, nil
 
 	case cql2.OpIsNull:
@@ -159,7 +155,7 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		}
 		col, ok := propRef(op.Args[0])
 		if !ok {
-			return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "arg must be a property"}
+			return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "arg must be a property"}
 		}
 		return mapColumn(col) + " IS NULL", nil, nil
 
@@ -170,7 +166,7 @@ func translateOp(op *cql2.Op) (string, []any, error) {
 		return translateTemporal(op)
 	}
 
-	return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "operator not supported"}
+	return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "operator not supported"}
 }
 
 func translateSpatial(op *cql2.Op) (string, []any, error) {
@@ -179,7 +175,7 @@ func translateSpatial(op *cql2.Op) (string, []any, error) {
 	}
 	col, ok := propRef(op.Args[0])
 	if !ok {
-		return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "first arg must be a property (e.g. geometry)"}
+		return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "first arg must be a property (e.g. geometry)"}
 	}
 	wkt, err := spatialWKT(op.Args[1])
 	if err != nil {
@@ -234,16 +230,13 @@ func translateTemporal(op *cql2.Op) (string, []any, error) {
 		}
 		return col + " = ?", []any{v}, nil
 	}
-	return "", nil, &cql2.TranslationError{Backend: backendID, Op: op.Op, Reason: "unsupported temporal op"}
+	return "", nil, &cql2.TranslationError{Backend: backendName, Op: op.Op, Reason: "unsupported temporal op"}
 }
 
-// mapColumn translates a STAC property name into the SQL column
-// reference used by the items table. Top-level fields map to dedicated
-// columns; everything else is extracted from the JSON `properties` blob.
-//
-// Already-qualified `properties.<x>` paths pass through to a JSON path
-// expression (preserving stac-server's convention) so callers that send
-// the prefix don't get double-prefixed.
+// mapColumn translates a STAC property name to a SQL expression. Top-
+// level fields hit dedicated columns; everything else is `json_extract`
+// against the `properties` blob. Already-qualified `properties.<x>`
+// passes through (matches stac-server's convention).
 func mapColumn(name string) string {
 	switch name {
 	case "id":
@@ -262,17 +255,15 @@ func mapColumn(name string) string {
 }
 
 func jsonPath(name string) string {
-	// Quote the property name in the JSON path so colon-bearing keys
-	// (e.g. "eo:cloud_cover") survive — `$."eo:cloud_cover"`.
+	// Quote the property name so colon-bearing keys (e.g.
+	// "eo:cloud_cover") survive in the JSON path.
 	escaped := strings.ReplaceAll(name, `"`, `""`)
 	return `json_extract(items.properties, '$."` + escaped + `"')`
 }
 
-// ---- helpers (sibling of opensearch translator's helpers) ----------------
-
 func propAndLiteral(args []cql2.Expression) (string, any, error) {
 	if len(args) != 2 {
-		return "", nil, &cql2.TranslationError{Backend: backendID, Reason: "arity"}
+		return "", nil, &cql2.TranslationError{Backend: backendName, Reason: "arity"}
 	}
 	if name, ok := propRef(args[0]); ok {
 		v, err := literalValue(args[1])
@@ -288,7 +279,7 @@ func propAndLiteral(args []cql2.Expression) (string, any, error) {
 		}
 		return mapColumn(name), v, nil
 	}
-	return "", nil, &cql2.TranslationError{Backend: backendID, Reason: "expected property + literal"}
+	return "", nil, &cql2.TranslationError{Backend: backendName, Reason: "expected property + literal"}
 }
 
 func propRef(e cql2.Expression) (string, bool) {
@@ -310,7 +301,8 @@ func literalValue(e cql2.Expression) (any, error) {
 	case *cql2.StringLit:
 		return n.Value, nil
 	case *cql2.BoolLit:
-		// SQLite has no boolean — store as 0/1 to match json_extract.
+		// SQLite has no boolean type; json_extract on a JSON true/false
+		// returns 1/0, so bind the same.
 		if n.Value {
 			return int64(1), nil
 		}
@@ -318,7 +310,7 @@ func literalValue(e cql2.Expression) (any, error) {
 	case *cql2.NumLit:
 		f, err := n.Value.Float64()
 		if err != nil {
-			return nil, &cql2.TranslationError{Backend: backendID, Reason: fmt.Sprintf("number %q: %v", n.Value.String(), err)}
+			return nil, &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("number %q: %v", n.Value.String(), err)}
 		}
 		return f, nil
 	case *cql2.NullLit:
@@ -337,54 +329,43 @@ func literalValue(e cql2.Expression) (any, error) {
 		}
 		return [2]any{lo, hi}, nil
 	}
-	return nil, &cql2.TranslationError{Backend: backendID, Reason: fmt.Sprintf("unsupported literal type %T", e)}
+	return nil, &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("unsupported literal type %T", e)}
 }
 
-// spatialWKT renders a CQL2 spatial literal (GeomLit or BBoxLit) into
-// the WKT form GeomFromText accepts.
+// spatialWKT renders a CQL2 spatial literal as WKT for GeomFromText.
+// Falls back to a JSON dump for shapes we don't render directly; that
+// path relies on a GeomFromGeoJSON-capable SpatiaLite build.
 func spatialWKT(e cql2.Expression) (string, error) {
 	switch n := e.(type) {
 	case *cql2.BBoxLit:
-		if len(n.Coords) < 4 {
-			return "", &cql2.TranslationError{Backend: backendID, Reason: "bbox needs 4 elements"}
+		if wkt, ok := bboxToWKT(n.Coords); ok {
+			return wkt, nil
 		}
-		w, s, e, north := n.Coords[0], n.Coords[1], n.Coords[2], n.Coords[3]
-		return fmt.Sprintf(
-			"POLYGON((%s %s,%s %s,%s %s,%s %s,%s %s))",
-			f(w), f(s), f(e), f(s), f(e), f(north), f(w), f(north), f(w), f(s),
-		), nil
+		return "", &cql2.TranslationError{Backend: backendName, Reason: "bbox needs 4 elements"}
 	case *cql2.GeomLit:
-		// Render a Point or Polygon directly; bail to GeoJSON-as-WKT
-		// fallback for richer shapes.
 		switch g := n.Geom.(type) {
 		case *cql2.Point:
-			return fmt.Sprintf("POINT(%s %s)", f(g.Coord.X), f(g.Coord.Y)), nil
+			return fmt.Sprintf("POINT(%s %s)", fmtFloat(g.Coord.X), fmtFloat(g.Coord.Y)), nil
 		case *cql2.Polygon:
 			parts := make([]string, 0, len(g.Rings))
 			for _, ring := range g.Rings {
-				ring := ring
 				cs := make([]string, 0, len(ring))
 				for _, c := range ring {
-					cs = append(cs, fmt.Sprintf("%s %s", f(c.X), f(c.Y)))
+					cs = append(cs, fmt.Sprintf("%s %s", fmtFloat(c.X), fmtFloat(c.Y)))
 				}
 				parts = append(parts, "("+strings.Join(cs, ",")+")")
 			}
 			return "POLYGON(" + strings.Join(parts, ",") + ")", nil
 		}
-		// Fallback: serialize whatever shape upstream gave us as JSON
-		// and let SpatiaLite parse it via GeomFromGeoJSON, which is
-		// available in modern builds. If absent the query errors with
-		// a clear message; spatial filters of arbitrary geometry on
-		// SpatiaLite are best-effort.
 		b, err := json.Marshal(n.Geom)
 		if err != nil {
-			return "", &cql2.TranslationError{Backend: backendID, Reason: fmt.Sprintf("encode geom: %v", err)}
+			return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("encode geom: %v", err)}
 		}
 		return string(b), nil
 	}
-	return "", &cql2.TranslationError{Backend: backendID, Reason: fmt.Sprintf("spatial literal type %T", e)}
+	return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("spatial literal type %T", e)}
 }
 
 func arityErr(op cql2.Operator) error {
-	return &cql2.TranslationError{Backend: backendID, Op: op, Reason: "arity"}
+	return &cql2.TranslationError{Backend: backendName, Op: op, Reason: "arity"}
 }
