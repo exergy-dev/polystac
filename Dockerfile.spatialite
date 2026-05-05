@@ -6,9 +6,9 @@
 #
 # Build with: docker build -f Dockerfile.spatialite -t polystac:spatialite .
 #
-# At runtime, set:
-#   POLYSTAC_BACKEND=spatialite
-#   POLYSTAC_SPATIALITE_DATABASE=/data/stac.db
+# At runtime defaults to backend=spatialite, db=/data/stac.db (container
+# fs). Bind-mount /data to a host directory if you want the catalog to
+# survive `docker rm`.
 
 FROM golang:1.25-alpine AS build
 ARG TARGETOS=linux
@@ -30,8 +30,17 @@ FROM alpine:3.20
 # and looks for `mod_spatialite.so`, so create the unversioned symlink.
 RUN apk add --no-cache libspatialite sqlite-libs ca-certificates \
  && ln -sf mod_spatialite.so.8 /usr/lib/mod_spatialite.so \
- && adduser -D -u 65532 nonroot
+ && adduser -D -u 65532 nonroot \
+ && mkdir -p /data && chown nonroot:nonroot /data
 COPY --from=build /out/polystac-spatialite /polystac
+
+# Defaults so `docker run polystac:spatialite` Just Works. The db lives
+# in /data/stac.db; mount a host volume to /data to persist across
+# `docker rm`. Override either env var on the command line.
+ENV POLYSTAC_BACKEND=spatialite \
+    POLYSTAC_SPATIALITE_DATABASE=/data/stac.db
+VOLUME ["/data"]
+
 EXPOSE 8000
 USER nonroot
 ENTRYPOINT ["/polystac"]
