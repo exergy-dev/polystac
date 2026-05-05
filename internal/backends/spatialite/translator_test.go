@@ -118,8 +118,8 @@ func TestTranslatorSpatial(t *testing.T) {
 		t.Errorf("args: got %d want 1", len(args))
 	}
 	wkt, _ := args[0].(string)
-	if !strings.HasPrefix(wkt, "POLYGON((-1 -1") {
-		t.Errorf("expected POLYGON WKT, got %q", wkt)
+	if !strings.Contains(wkt, "POLYGON") || !strings.Contains(wkt, "-1 -1") || !strings.Contains(wkt, "1 1") {
+		t.Errorf("expected POLYGON WKT spanning -1,-1 to 1,1, got %q", wkt)
 	}
 }
 

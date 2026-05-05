@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
+	gtswkt "github.com/exergy-dev/go-topology-suite/wkt"
+
 	"github.com/example/polystac/pkg/cql2"
 )
 
@@ -333,29 +336,23 @@ func literalValue(e cql2.Expression) (any, error) {
 }
 
 // spatialWKT renders a CQL2 spatial literal as WKT for GeomFromText.
-// Falls back to a JSON dump for shapes we don't render directly; that
-// path relies on a GeomFromGeoJSON-capable SpatiaLite build.
+// Shapes go-topology-suite doesn't construct directly fall back to
+// their JSON form (which a GeomFromGeoJSON-capable SpatiaLite build
+// can also accept).
 func spatialWKT(e cql2.Expression) (string, error) {
 	switch n := e.(type) {
 	case *cql2.BBoxLit:
-		if wkt, ok := bboxToWKT(n.Coords); ok {
-			return wkt, nil
+		if w, ok := bboxToWKT(n.Coords); ok {
+			return w, nil
 		}
 		return "", &cql2.TranslationError{Backend: backendName, Reason: "bbox needs 4 elements"}
 	case *cql2.GeomLit:
-		switch g := n.Geom.(type) {
-		case *cql2.Point:
-			return fmt.Sprintf("POINT(%s %s)", fmtFloat(g.Coord.X), fmtFloat(g.Coord.Y)), nil
-		case *cql2.Polygon:
-			parts := make([]string, 0, len(g.Rings))
-			for _, ring := range g.Rings {
-				cs := make([]string, 0, len(ring))
-				for _, c := range ring {
-					cs = append(cs, fmt.Sprintf("%s %s", fmtFloat(c.X), fmtFloat(c.Y)))
-				}
-				parts = append(parts, "("+strings.Join(cs, ",")+")")
+		if g, ok := cql2GeomToGTS(n.Geom); ok {
+			out, err := gtswkt.Marshal(g)
+			if err != nil {
+				return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("encode geom: %v", err)}
 			}
-			return "POLYGON(" + strings.Join(parts, ",") + ")", nil
+			return out, nil
 		}
 		b, err := json.Marshal(n.Geom)
 		if err != nil {
@@ -364,6 +361,24 @@ func spatialWKT(e cql2.Expression) (string, error) {
 		return string(b), nil
 	}
 	return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("spatial literal type %T", e)}
+}
+
+func cql2GeomToGTS(g cql2.Geometry) (gtsgeom.Geometry, bool) {
+	switch x := g.(type) {
+	case *cql2.Point:
+		return gtsgeom.NewPoint(nil, gtsgeom.XY{X: x.Coord.X, Y: x.Coord.Y}), true
+	case *cql2.Polygon:
+		rings := make([][]gtsgeom.XY, len(x.Rings))
+		for i, ring := range x.Rings {
+			pts := make([]gtsgeom.XY, len(ring))
+			for j, c := range ring {
+				pts[j] = gtsgeom.XY{X: c.X, Y: c.Y}
+			}
+			rings[i] = pts
+		}
+		return gtsgeom.NewPolygon(nil, rings...), true
+	}
+	return nil, false
 }
 
 func arityErr(op cql2.Operator) error {
