@@ -1,30 +1,97 @@
 # AWS SAM template for PolyStac on Lambda.
 #
-# Build:
-#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
-#     -o bootstrap ./cmd/polystac-lambda
-#   sam package --output-template packaged.yaml ...
+# Two deploy modes selected by the Backend parameter:
 #
-# The function uses the provided.al2023 custom runtime; the Go binary
-# must be named `bootstrap` and live at the root of the deployment
-# package.
+#   pgstac      — Lambda inside a VPC, talks to RDS Postgres + pgstac.
+#                 Uses RDS Proxy when ProxyEnabled=true so the cold-
+#                 path connection cost is amortized across invocations.
+#   opensearch  — Lambda outside a VPC, talks to AWS OpenSearch Service
+#                 (or any OS/ES cluster reachable over public endpoint).
+#
+# Build the deployment package:
+#
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+#     go build -trimpath -ldflags='-s -w' -o bootstrap ./cmd/polystac-lambda
+#
+#   # SAM expects a directory or zip.
+#   mkdir -p .build && cp bootstrap .build/bootstrap
+#
+#   sam deploy --resolve-s3 --stack-name polystac \
+#     --capabilities CAPABILITY_IAM \
+#     --parameter-overrides \
+#       Backend=pgstac \
+#       PgDsn="postgresql://stac:...@db.example.com:5432/stac" \
+#     --template deploy/sam/template.yaml
+#
+# `provided.al2023` runs the Go binary directly; the binary must be
+# named `bootstrap` and live at the root of the package.
 
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: PolyStac STAC API on AWS Lambda
+Description: PolyStac STAC API on AWS Lambda (pgstac or OpenSearch backend)
 
 Parameters:
   Backend:
     Type: String
     Default: pgstac
-    AllowedValues: [pgstac, opensearch, elasticsearch, inmem]
+    AllowedValues: [pgstac, opensearch, elasticsearch]
+    Description: Storage backend selector.
+
+  CodeUri:
+    Type: String
+    Default: ./.build
+    Description: Local directory or s3:// URI containing the `bootstrap` binary.
+
+  MemoryMB:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 10240
+
+  TimeoutSec:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 900
+
+  Architecture:
+    Type: String
+    Default: arm64
+    AllowedValues: [x86_64, arm64]
+    Description: arm64 is cheaper and slightly faster on Graviton; PolyStac is pure-Go and works on either.
+
+  # ---- pgstac --------------------------------------------------------
   PgDsn:
     Type: String
     Default: ""
     NoEcho: true
+    Description: 'postgres://user:pass@host:5432/db?sslmode=require — leave empty to use the per-field params below.'
+  PgPoolMin:
+    Type: Number
+    Default: 0
+    Description: Pool min connections. Lambda concurrency means each instance is single-shot — keep low.
+  PgPoolMax:
+    Type: Number
+    Default: 2
+    Description: Pool max connections per Lambda instance.
+  PgUseApiHydrate:
+    Type: String
+    Default: "false"
+    AllowedValues: [ "true", "false" ]
+  VpcSubnets:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Subnet IDs the Lambda joins (must reach the DB). Required for pgstac.
+  VpcSecurityGroups:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Security groups attached to the Lambda ENI.
+
+  # ---- opensearch / elasticsearch -----------------------------------
   EsHosts:
     Type: String
     Default: ""
+    Description: 'https://search-mydomain.us-east-1.es.amazonaws.com or comma list.'
   EsUsername:
     Type: String
     Default: ""
@@ -32,29 +99,96 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
+  EsRefresh:
+    Type: String
+    Default: "false"
+    Description: '"wait_for" gives read-after-write at the cost of write latency; "false" relies on the index periodic refresh.'
+
+  # ---- common --------------------------------------------------------
+  LandingTitle:
+    Type: String
+    Default: "PolyStac"
+  LandingDescription:
+    Type: String
+    Default: "PolyStac STAC API"
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues: [debug, info, warn, error]
+
+Conditions:
+  IsPgstac:    !Equals [ !Ref Backend, pgstac ]
+  IsOpensearch: !Or [ !Equals [ !Ref Backend, opensearch ], !Equals [ !Ref Backend, elasticsearch ] ]
 
 Resources:
   PolystacFunction:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: .            # contains the `bootstrap` binary
+      CodeUri: !Ref CodeUri
       Handler: bootstrap
       Runtime: provided.al2023
-      Architectures: [x86_64]
-      MemorySize: 512
-      Timeout: 30
+      Architectures: [ !Ref Architecture ]
+      MemorySize: !Ref MemoryMB
+      Timeout: !Ref TimeoutSec
+      Tracing: Active
       Environment:
         Variables:
           POLYSTAC_BACKEND: !Ref Backend
+          POLYSTAC_LOG_FORMAT: json
+          POLYSTAC_LOG_LEVEL: !Ref LogLevel
+          POLYSTAC_TITLE: !Ref LandingTitle
+          POLYSTAC_DESCRIPTION: !Ref LandingDescription
+          POLYSTAC_LISTEN: ":8080"
+
+          # pgstac
           POLYSTAC_PG_DSN: !Ref PgDsn
+          POLYSTAC_PG_POOL_MIN: !Ref PgPoolMin
+          POLYSTAC_PG_POOL_MAX: !Ref PgPoolMax
+          POLYSTAC_PG_USE_API_HYDRATE: !Ref PgUseApiHydrate
+
+          # opensearch / elasticsearch
           POLYSTAC_ES_HOSTS: !Ref EsHosts
           POLYSTAC_ES_USERNAME: !Ref EsUsername
           POLYSTAC_ES_PASSWORD: !Ref EsPassword
-          POLYSTAC_LOG_FORMAT: json
+          POLYSTAC_ES_REFRESH: !Ref EsRefresh
+
+      VpcConfig: !If
+        - IsPgstac
+        - SubnetIds: !Ref VpcSubnets
+          SecurityGroupIds: !Ref VpcSecurityGroups
+        - !Ref AWS::NoValue
+
       FunctionUrlConfig:
-        AuthType: NONE      # set to AWS_IAM and put a CloudFront / API Gateway in front for production
+        AuthType: NONE
+        InvokeMode: BUFFERED
+        Cors:
+          AllowOrigins: [ "*" ]
+          AllowHeaders: [ "*" ]
+          AllowMethods: [ GET, POST, PUT, PATCH, DELETE ]
+          MaxAge: 86400
+
+      # Tightening blast radius: log to CloudWatch only.
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - !If
+          - IsPgstac
+          - AWSLambdaVPCAccessExecutionRole
+          - !Ref AWS::NoValue
+        # When using AWS OpenSearch Service with IAM-based auth, the
+        # function role needs `es:ESHttp*` on the domain ARN. Add a
+        # custom managed policy in the deploying account and attach it
+        # via Policies — kept out of the template so we don't mandate
+        # a specific auth model.
+
+      Tags:
+        Application: polystac
+        Backend: !Ref Backend
 
 Outputs:
   FunctionUrl:
-    Description: Public function URL
+    Description: Public Lambda Function URL
     Value: !GetAtt PolystacFunctionUrl.FunctionUrl
+  FunctionArn:
+    Value: !GetAtt PolystacFunction.Arn
+  RoleArn:
+    Value: !GetAtt PolystacFunctionRole.Arn
