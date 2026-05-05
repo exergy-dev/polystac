@@ -10,9 +10,9 @@
 #   POLYSTAC_BACKEND=spatialite
 #   POLYSTAC_SPATIALITE_DATABASE=/data/stac.db
 
-FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
-ARG TARGETOS
-ARG TARGETARCH
+FROM golang:1.25-alpine AS build
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN apk add --no-cache build-base sqlite-dev
 WORKDIR /src
 
@@ -20,12 +20,16 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+RUN CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -tags 'cgo spatialite' -ldflags="-s -w" \
         -o /out/polystac-spatialite ./cmd/polystac
 
 FROM alpine:3.20
+# Alpine's libspatialite ships only the SONAMEd file
+# (`mod_spatialite.so.8`); SQLite's `load_extension(name)` appends `.so`
+# and looks for `mod_spatialite.so`, so create the unversioned symlink.
 RUN apk add --no-cache libspatialite sqlite-libs ca-certificates \
+ && ln -sf mod_spatialite.so.8 /usr/lib/mod_spatialite.so \
  && adduser -D -u 65532 nonroot
 COPY --from=build /out/polystac-spatialite /polystac
 EXPOSE 8000
