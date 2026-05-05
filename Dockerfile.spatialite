@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+#
+# PolyStac SpatiaLite variant — CGO build with mod_spatialite at runtime.
+# Larger than the default distroless image (~30 MB → ~80 MB) because
+# alpine + libspatialite + sqlite-libs are required.
+#
+# Build with: docker build -f Dockerfile.spatialite -t polystac:spatialite .
+#
+# At runtime, set:
+#   POLYSTAC_BACKEND=spatialite
+#   POLYSTAC_SPATIALITE_DATABASE=/data/stac.db
+
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+RUN apk add --no-cache build-base sqlite-dev
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -tags 'cgo spatialite' -ldflags="-s -w" \
+        -o /out/polystac-spatialite ./cmd/polystac
+
+FROM alpine:3.20
+RUN apk add --no-cache libspatialite sqlite-libs ca-certificates \
+ && adduser -D -u 65532 nonroot
+COPY --from=build /out/polystac-spatialite /polystac
+EXPOSE 8000
+USER nonroot
+ENTRYPOINT ["/polystac"]
+CMD ["serve"]

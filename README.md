@@ -59,7 +59,7 @@ See SDD §10 for the full surface; common keys:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `POLYSTAC_BACKEND` | `inmem` | one of `inmem`, `pgstac`, `opensearch`, `elasticsearch` |
+| `POLYSTAC_BACKEND` | `inmem` | one of `inmem`, `pgstac`, `opensearch`, `elasticsearch`, `spatialite` (CGO build) |
 | `POLYSTAC_LISTEN` | `:8000` | listen address |
 | `POLYSTAC_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `POLYSTAC_LOG_FORMAT` | `json` | `json` or `text` |
@@ -70,6 +70,19 @@ See SDD §10 for the full surface; common keys:
 | `POLYSTAC_ES_USERNAME` / `POLYSTAC_ES_PASSWORD` | — | OS/ES credentials |
 | `POLYSTAC_ES_INDEX_PREFIX` | `items_` | per-collection items index prefix |
 | `POLYSTAC_ES_COLLECTIONS_INDEX` | `collections` | shared collections index |
+| `POLYSTAC_SPATIALITE_DATABASE` | — | SpatiaLite DB file path (CGO build) |
+| `POLYSTAC_SPATIALITE_EXTENSION_PATH` | `mod_spatialite` | override mod_spatialite library name/path |
+
+### SpatiaLite backend (optional, CGO build)
+
+The default `polystac` binary is pure Go (CGO-free, NF-7). The SpatiaLite backend depends on CGO and the `mod_spatialite` shared library, so it ships as a separate `polystac-spatialite` artifact built with `-tags 'cgo spatialite'`. Install the extension first (Debian: `apt install libsqlite3-mod-spatialite`; Alpine: `apk add libspatialite`).
+
+```sh
+CGO_ENABLED=1 go build -tags 'cgo spatialite' -o polystac-spatialite ./cmd/polystac
+POLYSTAC_BACKEND=spatialite POLYSTAC_SPATIALITE_DATABASE=/var/lib/polystac/stac.db ./polystac-spatialite serve
+```
+
+`Dockerfile.spatialite` produces a container image with the extension preinstalled. The backend creates its own schema (collections, items, R-Tree spatial index) on first open.
 
 ## Deployment
 
@@ -111,7 +124,7 @@ pkg/cql2/eval/        AST evaluator (in-memory + property-test oracle)
 pkg/polystac/hook/    in-process hook API
 internal/server/      HTTP routing + service layer
 internal/app/         wiring
-internal/backends/    inmem | pgstac | opensearch
+internal/backends/    inmem | pgstac | opensearch | spatialite (cgo+spatialite tags)
 internal/config/      env + flag loader
 internal/observability/ slog + Prometheus + tracing facade
 internal/hooks/       HTTP webhook delivery
@@ -132,6 +145,8 @@ go test -tags 'integration pgstac' ./...        # spins up pgstac via testcontai
 go test -tags 'integration opensearch' ./...    # spins up OpenSearch via testcontainers
 go test -tags 'integration elasticsearch' ./... # spins up Elasticsearch 8.x via testcontainers
 go test -tags 'integration pgstac opensearch elasticsearch' ./...  # all of them
+CGO_ENABLED=1 go test -tags 'cgo spatialite' ./internal/backends/spatialite/...  # SpatiaLite unit tests
+CGO_ENABLED=1 go test -tags 'cgo spatialite' ./test/parity/...                  # parity corpus on SpatiaLite
 ```
 
-The integration tags require Docker on the host. Set `POLYSTAC_TEST_PG_DSN` / `POLYSTAC_TEST_ES_HOSTS` (with optional `_USERNAME`/`_PASSWORD`) to point at an already-running cluster and skip the container spin-up.
+The integration tags require Docker on the host. Set `POLYSTAC_TEST_PG_DSN` / `POLYSTAC_TEST_ES_HOSTS` (with optional `_USERNAME`/`_PASSWORD`) to point at an already-running cluster and skip the container spin-up. SpatiaLite tests skip cleanly when `mod_spatialite` is not on the loader path.
