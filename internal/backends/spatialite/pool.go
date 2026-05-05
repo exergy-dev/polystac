@@ -97,10 +97,12 @@ func registerDriver(extPath string) string {
 	name := fmt.Sprintf("sqlite3_polystac_%d", driverSeq)
 	sql.Register(name, &sqlite3.SQLiteDriver{
 		ConnectHook: func(c *sqlite3.SQLiteConn) error {
-			// Load mod_spatialite on every new connection. The empty
-			// entrypoint string lets SQLite pick the default
-			// (sqlite3_modspatialite_init).
-			return c.LoadExtension(extPath, "")
+			// Load mod_spatialite on every new connection. mattn's
+			// LoadExtension passes the entry argument as a non-null
+			// empty C string when given "", which makes SQLite look
+			// up the symbol "" rather than its default; name the
+			// canonical entry explicitly.
+			return c.LoadExtension(extPath, "sqlite3_modspatialite_init")
 		},
 	})
 	driverRegistry[extPath] = name
