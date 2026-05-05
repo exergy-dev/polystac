@@ -1,4 +1,7 @@
 /polystac
+/bench/polystac
+/bench/results/*/bench-seed*
+/bench/results/*/polystac
 /polystac-lambda
 /polystac-ingest
 /dist/

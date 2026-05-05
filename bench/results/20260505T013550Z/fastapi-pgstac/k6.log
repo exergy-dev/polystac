@@ -1,0 +1,33 @@
+
+     ✓ ok
+
+     checks.........................: 100.00% ✓ 15306      ✗ 0    
+     data_received..................: 85 MB   2.8 MB/s
+     data_sent......................: 1.8 MB  59 kB/s
+     http_req_blocked...............: min=432ns  med=2.3µs   p(90)=3.41µs   p(95)=3.81µs   p(99)=5.77µs   max=495.39µs
+     http_req_connecting............: min=0s     med=0s      p(90)=0s       p(95)=0s       p(99)=0s       max=252.59µs
+     http_req_duration..............: min=7.28ms med=41.68ms p(90)=47.82ms  p(95)=49.56ms  p(99)=53.55ms  max=434.57ms
+       { expected_response:true }...: min=7.28ms med=41.68ms p(90)=47.82ms  p(95)=49.56ms  p(99)=53.55ms  max=434.57ms
+   ✓ http_req_failed................: 0.00%   ✓ 0          ✗ 15306
+     http_req_receiving.............: min=11.8µs med=63.48µs p(90)=120.78µs p(95)=137.09µs p(99)=170.41µs max=795.07µs
+     http_req_sending...............: min=2.56µs med=12.14µs p(90)=34.14µs  p(95)=38.66µs  p(99)=46.24µs  max=436.14µs
+     http_req_tls_handshaking.......: min=0s     med=0s      p(90)=0s       p(95)=0s       p(99)=0s       max=0s      
+     http_req_waiting...............: min=7.22ms med=41.59ms p(90)=47.73ms  p(95)=49.47ms  p(99)=53.47ms  max=434.5ms 
+     http_reqs......................: 15306   509.706243/s
+     iteration_duration.............: min=7.41ms med=41.82ms p(90)=47.96ms  p(95)=49.68ms  p(99)=53.73ms  max=434.91ms
+     iterations.....................: 15306   509.706243/s
+     latency_collections_ms.........: min=23ms   med=38ms    p(90)=43ms     p(95)=45ms     p(99)=49ms     max=426ms   
+     latency_landing_ms.............: min=8ms    med=18ms    p(90)=22ms     p(95)=23ms     p(99)=26ms     max=33ms    
+     latency_search_all_ms..........: min=31ms   med=44ms    p(90)=49ms     p(95)=51ms     p(99)=55ms     max=426ms   
+     latency_search_bbox_ms.........: min=29ms   med=42ms    p(90)=48ms     p(95)=49ms     p(99)=53ms     max=435ms   
+     latency_search_cql2_ms.........: min=29ms   med=44ms    p(90)=49ms     p(95)=51ms     p(99)=55.13ms  max=426ms   
+     latency_search_dt_ms...........: min=31ms   med=44ms    p(90)=49ms     p(95)=51ms     p(99)=55.15ms  max=435ms   
+     requests_collections...........: 2508    83.519094/s
+     requests_landing...............: 2540    84.584729/s
+     requests_search_all............: 2533    84.351621/s
+     requests_search_bbox...........: 2553    85.017643/s
+     requests_search_cql2...........: 2587    86.149879/s
+     requests_search_dt.............: 2585    86.083277/s
+     vus............................: 20      min=20       max=20 
+     vus_max........................: 20      min=20       max=20 
+

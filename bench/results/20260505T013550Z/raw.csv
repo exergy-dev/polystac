@@ -1,0 +1,5 @@
+label,image,cold_ms,idle_rss,peak_rss,image_size_bytes
+polystac-pgstac,polystac:bench-20260505T013550Z,365,7.457MiB,27.1 MiB,16064466
+fastapi-pgstac,ghcr.io/stac-utils/stac-fastapi-pgstac:latest,442,54.31MiB,63.8 MiB,616948644
+polystac-os,polystac:bench-20260505T013550Z,423,10.76MiB,50.3 MiB,16064466
+fastapi-os,ghcr.io/stac-utils/stac-fastapi-os:latest,401,80.03MiB,84.9 MiB,420462922

@@ -1,0 +1,10 @@
+# Benchmark image: the prebuilt static binary into distroless. The
+# legacy Docker builder doesn't expand $BUILDPLATFORM, so we skip the
+# multi-stage cross-build the production Dockerfile uses and let the
+# bench harness build the host-arch binary up-front.
+FROM gcr.io/distroless/static:nonroot
+COPY polystac /polystac
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/polystac"]
+CMD ["serve"]
