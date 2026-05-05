@@ -73,7 +73,7 @@ These cover most workloads up to a few thousand QPS; tune from your load tests (
 
 `cmd/polystac-lambda` shares the `app.Build` pipeline with the long-running server. Cold start ≤ 500 ms on a 512 MB function (SDD §NF-2). Configure the same env vars; the Lambda runtime variant is `provided.al2023`.
 
-Deployment template: `deploy/terraform/main.tf`. End-to-end walkthrough in `docs/deploy-lambda.md`.
+Deployment: composable Terraform modules at `deploy/terraform/modules/{lambda,server,pgstac,opensearch}` with example stacks at `deploy/terraform/examples/`. End-to-end walkthrough in `docs/deploy-aws.md`.
 
 ## Hooks
 

@@ -1,0 +1,37 @@
+name: terraform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/terraform/**"
+      - ".github/workflows/terraform.yml"
+  pull_request:
+    paths:
+      - "deploy/terraform/**"
+      - ".github/workflows/terraform.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -recursive -check deploy/terraform
+
+      - name: validate every module + example
+        run: |
+          set -e
+          fail=0
+          for d in deploy/terraform deploy/terraform/modules/* deploy/terraform/examples/*; do
+            [ -d "$d" ] || continue
+            echo "=== $d ==="
+            ( cd "$d" && terraform init -backend=false -input=false -no-color >/dev/null \
+              && terraform validate -no-color ) || fail=1
+          done
+          exit $fail

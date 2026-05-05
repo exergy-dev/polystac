@@ -43,7 +43,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 # after first invocation.
 ```
 
-`deploy/terraform/main.tf` is a ready-to-use module if you want a clean redeploy. SAM/CloudFormation users can translate it directly — see `docs/deploy-lambda.md` §10.
+`deploy/terraform/examples/lambda-byo/` (or `lambda-opensearch/` if you want PolyStac to also manage the OS domain) is a ready-to-use composition for a clean redeploy. SAM/CloudFormation users can translate the underlying module directly — see `docs/deploy-aws.md` §11.
 
 ## Hooks
 

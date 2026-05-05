@@ -75,7 +75,7 @@ See SDD §10 for the full surface; common keys:
 
 - **Container:** `Dockerfile` builds a distroless multi-arch image (~25–30 MB).
 - **Kubernetes:** `deploy/helm/polystac` Helm chart with overlay values for pgstac (`values-pgstac.yaml`) and OpenSearch (`values-opensearch.yaml`).
-- **Lambda:** `cmd/polystac-lambda` is the Lambda variant; `deploy/terraform/main.tf` is a ready-to-use module covering both backends (pgstac and OpenSearch). Cold start < 500 ms. See `docs/deploy-lambda.md`.
+- **AWS Lambda or ECS Fargate:** `deploy/terraform/` ships a composable module set — `modules/{lambda,server,pgstac,opensearch}` plus five `examples/*` stacks (lambda-byo, lambda-pgstac, lambda-opensearch, server-pgstac, server-opensearch). Cold start < 500 ms. End-to-end walkthrough in `docs/deploy-aws.md`.
 
 ## Drop-in migration
 

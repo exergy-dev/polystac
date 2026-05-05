@@ -23,7 +23,7 @@ All notable changes to PolyStac. Format follows [Keep a Changelog](https://keepa
 - **Front F (config + CLI):** env + flag loader honoring both `POLYSTAC_*` and `STAC_FASTAPI_*` names; `polystac serve` + `polystac migrate` + `polystac version`.
 - **Front G (observability):** `log/slog` JSON/text handlers; Prometheus registry with `polystac_request_duration_seconds`, `polystac_repository_duration_seconds`, `polystac_backend_pool_in_use`, `polystac_hook_invocations_total`; `Tracer` facade for OTel.
 - **Front H (parity + property tests):** `test/parity` generic Suite + 10-case corpus (the cross-backend behavior contract); pgstac and OS/ES wiring behind `integration` build tags. `test/cql2` rapid property tests.
-- **Front I (deployment artifacts):** distroless multi-arch `Dockerfile`; `cmd/polystac-lambda` (provided.al2023); Helm chart with `values-pgstac.yaml` / `values-opensearch.yaml` overlays; Terraform module covering both backends (`docs/deploy-lambda.md` walkthrough).
+- **Front I (deployment artifacts):** distroless multi-arch `Dockerfile`; `cmd/polystac-lambda` (provided.al2023); Helm chart with `values-pgstac.yaml` / `values-opensearch.yaml` overlays; composable Terraform modules at `deploy/terraform/modules/{lambda,server,pgstac,opensearch}` with five example stacks under `examples/`. The legacy single-module entry at `deploy/terraform/` is preserved as a passthrough shim — existing callers keep working unchanged. End-to-end walkthrough in `docs/deploy-aws.md`.
 - **Front J (hooks):** in-process `pkg/polystac/hook` (Pre, Post, Chain), out-of-process HTTP webhook (`internal/hooks.HTTPWebhook`) with passthrough/short-circuit/rewrite semantics.
 
 ### Added — Gate 2
