@@ -199,3 +199,58 @@ func TestRegisteredViaFactory(t *testing.T) {
 	// Force the registry to see the inmem registration via init().
 	_ = mustParse // ensure go test sees this var even if other tests are skipped
 }
+
+// TestSearchIntersectsIsExact verifies SearchRequest.Intersects (the
+// REST search-path field, not a CQL2 filter) uses real geometric
+// predicates — two right triangles whose bboxes overlap but whose
+// interiors are disjoint must NOT match.
+func TestSearchIntersectsIsExact(t *testing.T) {
+	ctx := context.Background()
+	r := New()
+	if err := r.UpsertCollection(ctx, &stac.Collection{ID: "c", Description: "x", License: "y"}); err != nil {
+		t.Fatalf("upsert collection: %v", err)
+	}
+	item := &stac.Item{
+		ID: "tri-A", Collection: "c",
+		Geometry: &stac.Geometry{
+			Type: stac.GeometryPolygon,
+			Coordinates: [][][]float64{{
+				{0, 0}, {4, 0}, {0, 4}, {0, 0},
+			}},
+		},
+		BBox:       []float64{0, 0, 4, 4},
+		Properties: stac.ItemProperties{"datetime": "2024-01-01T00:00:00Z"},
+	}
+	if err := r.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("upsert item: %v", err)
+	}
+
+	// Disjoint query (x+y >= 5) — bbox overlaps the item but interiors don't.
+	disjoint := &stac.Geometry{
+		Type: stac.GeometryPolygon,
+		Coordinates: [][][]float64{{
+			{4, 4}, {4, 1}, {1, 4}, {4, 4},
+		}},
+	}
+	page, err := r.Search(ctx, repository.SearchRequest{Intersects: disjoint, Limit: 10})
+	if err != nil {
+		t.Fatalf("search disjoint: %v", err)
+	}
+	if len(page.Items) != 0 {
+		t.Errorf("expected 0 matches, got %d (bbox approximation would say 1)", len(page.Items))
+	}
+
+	overlap := &stac.Geometry{
+		Type: stac.GeometryPolygon,
+		Coordinates: [][][]float64{{
+			{0, 0}, {2, 0}, {2, 2}, {0, 2}, {0, 0},
+		}},
+	}
+	page, err = r.Search(ctx, repository.SearchRequest{Intersects: overlap, Limit: 10})
+	if err != nil {
+		t.Fatalf("search overlap: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Errorf("expected 1 match, got %d", len(page.Items))
+	}
+}

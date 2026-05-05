@@ -8,6 +8,7 @@ package inmem
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -16,6 +17,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
+	gtspredicate "github.com/exergy-dev/go-topology-suite/predicate"
 
 	"github.com/example/polystac/internal/backends"
 	"github.com/example/polystac/pkg/cql2/eval"
@@ -318,14 +323,12 @@ func (r *Repo) collectCandidates(req repository.SearchRequest) []*stac.Item {
 // matchItem applies bbox, intersects, datetime, and CQL2 filters.
 func matchItem(it *stac.Item, req repository.SearchRequest) (bool, error) {
 	if len(req.BBox) >= 4 {
-		if !bboxOverlaps(it, req.BBox) {
+		if !geometryIntersectsBBox(it, req.BBox) {
 			return false, nil
 		}
 	}
 	if req.Intersects != nil {
-		// In-memory backend approximates intersects with bbox overlap.
-		// This matches the cql2/eval oracle's behavior.
-		if !geometryBBoxOverlaps(it, req.Intersects) {
+		if !geometryIntersectsGeometry(it, req.Intersects) {
 			return false, nil
 		}
 	}
@@ -351,22 +354,36 @@ func matchItem(it *stac.Item, req repository.SearchRequest) (bool, error) {
 	return true, nil
 }
 
-func bboxOverlaps(it *stac.Item, bb []float64) bool {
-	if len(it.BBox) < 4 {
-		return false
+// geometryIntersectsBBox tests an item's geometry against a 4-element
+// query bbox using exact predicates when both sides yield a real
+// geometry; otherwise falls back to bbox overlap on the cached corners.
+func geometryIntersectsBBox(it *stac.Item, bb []float64) bool {
+	if itemG, ok := stacGeomToGTS(it.Geometry); ok {
+		queryG := gtsBBoxPolygon(bb[0], bb[1], bb[2], bb[3])
+		if hit, err := gtspredicate.Intersects(itemG, queryG); err == nil {
+			return hit
+		}
 	}
-	a := [4]float64{it.BBox[0], it.BBox[1], it.BBox[2], it.BBox[3]}
-	b := [4]float64{bb[0], bb[1], bb[2], bb[3]}
-	return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
+	return cachedBBoxOverlaps(it, bb)
 }
 
-func geometryBBoxOverlaps(it *stac.Item, g *stac.Geometry) bool {
+// geometryIntersectsGeometry tests two geometries (item's vs query's)
+// for real geometric intersection, falling back to bbox overlap when
+// either side cannot be rendered as a full geometry.
+func geometryIntersectsGeometry(it *stac.Item, g *stac.Geometry) bool {
+	if itemG, ok := stacGeomToGTS(it.Geometry); ok {
+		if queryG, ok := stacGeomToGTS(g); ok {
+			if hit, err := gtspredicate.Intersects(itemG, queryG); err == nil {
+				return hit
+			}
+		}
+	}
 	gb, ok := g.BBox()
 	if !ok {
 		return true
 	}
 	if len(it.BBox) >= 4 {
-		return bboxOverlaps(it, gb[:])
+		return cachedBBoxOverlaps(it, gb[:])
 	}
 	if it.Geometry != nil {
 		if ib, ok := it.Geometry.BBox(); ok {
@@ -376,6 +393,37 @@ func geometryBBoxOverlaps(it *stac.Item, g *stac.Geometry) bool {
 		}
 	}
 	return true
+}
+
+// cachedBBoxOverlaps tests the item's stored bbox against a 4-element
+// query bbox. Used as a fallback when at least one side can't be
+// rendered as a real geometry (e.g., item lacks Geometry).
+func cachedBBoxOverlaps(it *stac.Item, bb []float64) bool {
+	if len(it.BBox) < 4 {
+		return false
+	}
+	return !(it.BBox[2] < bb[0] || it.BBox[0] > bb[2] || it.BBox[3] < bb[1] || it.BBox[1] > bb[3])
+}
+
+func stacGeomToGTS(g *stac.Geometry) (gtsgeom.Geometry, bool) {
+	if g == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(g)
+	if err != nil {
+		return nil, false
+	}
+	parsed, err := gtsgeojson.Unmarshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func gtsBBoxPolygon(w, s, e, n float64) gtsgeom.Geometry {
+	return gtsgeom.NewPolygon(nil, []gtsgeom.XY{
+		{X: w, Y: s}, {X: e, Y: s}, {X: e, Y: n}, {X: w, Y: n}, {X: w, Y: s},
+	})
 }
 
 func datetimeMatches(it *stac.Item, ti repository.TemporalInterval) bool {
