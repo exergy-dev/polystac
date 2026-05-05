@@ -127,14 +127,19 @@ func sortClauses(in []repository.SortClause) []any {
 }
 
 // mapField translates a STAC property name into the OpenSearch field
-// path. id and collection are top-level keywords; everything else lives
-// under properties.
+// path. id, collection, geometry are top-level. Everything else lives
+// under `properties.`. Already-qualified names (`properties.<x>`) and
+// any other dotted path the caller supplied pass through unchanged so
+// the function is idempotent — clients written against stac-server's
+// convention send `properties.eo:cloud_cover` directly, and we must
+// not double-prefix that into `properties.properties.eo:cloud_cover`.
 func mapField(name string) string {
 	switch name {
-	case "id", "collection":
+	case "id", "collection", "geometry":
 		return name
-	case "geometry":
-		return "geometry"
+	}
+	if strings.Contains(name, ".") {
+		return name
 	}
 	return "properties." + name
 }

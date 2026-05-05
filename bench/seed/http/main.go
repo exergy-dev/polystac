@@ -43,6 +43,26 @@ func main() {
 		fail("create collection: status %d: %s", status, body)
 	}
 
+	// Some impls (notably stac-server) return 201 on POST /collections
+	// before the collection doc has refreshed enough to be visible to
+	// subsequent reads. The next POST /items handler internally checks
+	// for the collection and 404s if it can't see it. Poll the GET
+	// endpoint until it succeeds, capped at 30 s.
+	{
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get(*url + "/collections/" + *colID)
+			if err == nil && resp.StatusCode == 200 {
+				resp.Body.Close()
+				break
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
 	rng := rand.New(rand.NewSource(1))
 	platforms := []string{"S2A", "S2B", "L8", "L9", "MODIS"}
 

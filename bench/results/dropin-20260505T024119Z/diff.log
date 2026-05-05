@@ -1,0 +1,36 @@
+  [match] GET / : A=200 B=200 
+  [match] GET /conformance : A=200 B=200 
+  [expected-diff] GET /api : A=200 B=200 B body not JSON: invalid character 'o' looking for beginning of value; expected: spec-allows-both: PolyStac returns OpenAPI as JSON; stac-server returns it as YAML. The STAC API spec accepts either media type.
+  [match] GET /collections : A=200 B=200 
+  [match] GET /collections/compat : A=200 B=200 
+  [match] GET /collections/__nope__ : A=404 B=404 
+  [expected-diff] GET /queryables : A=200 B=200 key "description" missing in B; key "additionalProperties" missing in A; expected: schema-cosmetic: PolyStac includes `description`; stac-server includes `additionalProperties`. Both are valid JSON-Schema fields and clients typically read `properties`.
+  [expected-diff] GET /collections/compat/queryables : A=200 B=200 key "description" missing in B; key "additionalProperties" missing in A; expected: schema-cosmetic: same as queryables-global.
+  [match] GET /collections/compat/items?limit=5 : A=200 B=200 
+  [match] GET /collections/compat/items?limit=5&page=2 : A=200 B=200 
+  [match] GET /collections/compat/items/item-0000001 : A=200 B=200 
+  [match] GET /collections/compat/items/__nope__ : A=404 B=404 
+  [match] GET /search?limit=5 : A=200 B=200 
+  [match] GET /search?collections=compat&limit=5 : A=200 B=200 
+  [match] GET /search?ids=item-0000001 : A=200 B=200 
+  [match] GET /search?bbox=-10,-10,10,10&limit=5 : A=200 B=200 
+  [match] GET /search?datetime=2024-01-01T00:00:00Z/2024-06-01T00:00:00Z&limit=5 : A=200 B=200 
+  [match] GET /search?sortby=id&limit=5 : A=200 B=200 
+  [match] GET /search?sortby=-properties.eo:cloud_cover&limit=5 : A=200 B=200 
+  [match] GET /search?fields=id,properties.datetime&limit=5 : A=200 B=200 
+  [expected-diff] GET /search?filter-lang=cql2-text&filter=%22eo:cloud_cover%22%20%3C%2050&limit=5 : A=200 B=400 status: A=200 B=400; expected: polystac-superset: stac-server's /conformance does not declare cql2-text. PolyStac is strictly more capable here; clients written against stac-server only send cql2-json.
+  [match] POST /search : A=200 B=200 
+  [match] POST /search : A=200 B=200 
+  [match] POST /search : A=200 B=200 
+  [expected-diff] POST /search : A=200 B=400 status: A=200 B=400; expected: polystac-superset: same as search-cql2-text.
+  [match] POST /search : A=200 B=200 
+  [match] POST /search : A=200 B=200 
+  [match] POST /search : A=200 B=200 
+
+Drop-in summary:
+  match                 23
+  expected-diff         5
+  diff                  0
+  endpoint-only-on-A    0
+  endpoint-only-on-B    0
+  both-fail             0
