@@ -40,6 +40,9 @@ func Open(ctx context.Context, anyCfg any) (repository.Repository, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r := env["refresh"]; r != "" {
+		client.Refresh = r
+	}
 	indexPrefix := env["index_prefix"]
 	if indexPrefix == "" {
 		indexPrefix = "items_"
@@ -91,21 +94,17 @@ func (r *Repo) Health(ctx context.Context) error { return r.client.Ping(ctx) }
 // Close is a no-op.
 func (r *Repo) Close() error { return nil }
 
-// ensureTemplates installs the items index template and the collections
-// index. Idempotent — both calls are safe to repeat across restarts.
+// ensureTemplates installs both index templates (items and
+// collections). Idempotent across restarts. Templates apply to indices
+// created AFTER the template — a pre-existing collections index with
+// the default dynamic mapping must be deleted manually for the new
+// mapping to take effect.
 func (r *Repo) ensureTemplates(ctx context.Context) error {
 	if err := r.client.PutIndexTemplate(ctx, itemTemplateName, itemIndexTemplate(r.indexPrefix)); err != nil {
-		return fmt.Errorf("opensearch: install template: %w", err)
+		return fmt.Errorf("opensearch: install items template: %w", err)
 	}
-	// Try to create the collections index (ignore "already exists").
-	if _, err := r.client.Get(ctx, r.collectionsIndex, "__nonexistent__"); err != nil && !errors.Is(err, ErrNotFound) {
-		// "index_not_found_exception" surfaces as 404 — create it.
-		if strings.Contains(err.Error(), "index_not_found") {
-			body := collectionsIndexBody()
-			if err := r.client.Index(ctx, r.collectionsIndex, "__init__", body); err == nil {
-				_ = r.client.Delete(ctx, r.collectionsIndex, "__init__")
-			}
-		}
+	if err := r.client.PutIndexTemplate(ctx, collectionsTemplateName, collectionsIndexTemplate(r.collectionsIndex)); err != nil {
+		return fmt.Errorf("opensearch: install collections template: %w", err)
 	}
 	return nil
 }

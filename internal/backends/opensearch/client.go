@@ -55,6 +55,13 @@ type HTTPClient struct {
 	Username string
 	Password string
 	HTTP     *http.Client
+
+	// Refresh controls the per-write `refresh=` query parameter:
+	//   "wait_for" (default) — block until the doc is searchable
+	//   "true"               — refresh the shard immediately
+	//   "false" / ""         — don't request a refresh (fastest; relies
+	//                          on the index's periodic refresh)
+	Refresh string
 }
 
 // NewHTTPClient constructs a client. baseURL is a comma-separated list;
@@ -129,7 +136,7 @@ func (c *HTTPClient) Search(ctx context.Context, index string, body []byte) ([]b
 
 // Index puts a single document.
 func (c *HTTPClient) Index(ctx context.Context, index, id string, body []byte) error {
-	_, err := c.do(ctx, http.MethodPut, "/"+index+"/_doc/"+url.PathEscape(id)+"?refresh=wait_for", body, nil)
+	_, err := c.do(ctx, http.MethodPut, "/"+index+"/_doc/"+url.PathEscape(id)+c.refreshQS("?"), body, nil)
 	return err
 }
 
@@ -144,7 +151,7 @@ func (c *HTTPClient) Get(ctx context.Context, index, id string) ([]byte, error) 
 
 // Delete removes a single document by id.
 func (c *HTTPClient) Delete(ctx context.Context, index, id string) error {
-	_, err := c.do(ctx, http.MethodDelete, "/"+index+"/_doc/"+url.PathEscape(id)+"?refresh=wait_for", nil, nil)
+	_, err := c.do(ctx, http.MethodDelete, "/"+index+"/_doc/"+url.PathEscape(id)+c.refreshQS("?"), nil, nil)
 	if isNotFound(err) {
 		return ErrNotFound
 	}
@@ -154,8 +161,22 @@ func (c *HTTPClient) Delete(ctx context.Context, index, id string) error {
 // Bulk runs a _bulk request.
 func (c *HTTPClient) Bulk(ctx context.Context, body []byte) (BulkResponse, error) {
 	var r BulkResponse
-	_, err := c.do(ctx, http.MethodPost, "/_bulk?refresh=wait_for", body, &r)
+	_, err := c.do(ctx, http.MethodPost, "/_bulk"+c.refreshQS("?"), body, &r)
 	return r, err
+}
+
+// refreshQS returns the `refresh=` query string fragment (with the
+// supplied separator) when a refresh policy is configured, otherwise
+// the empty string. Default policy is wait_for.
+func (c *HTTPClient) refreshQS(sep string) string {
+	r := c.Refresh
+	if r == "" {
+		r = "wait_for"
+	}
+	if strings.EqualFold(r, "false") || strings.EqualFold(r, "off") || strings.EqualFold(r, "none") {
+		return ""
+	}
+	return sep + "refresh=" + url.QueryEscape(r)
 }
 
 // DeleteIndex removes an index. 404 is treated as success.
