@@ -1,0 +1,9 @@
+# Example overlay for the OpenSearch backend.
+backend: opensearch
+opensearch:
+  hosts: "https://opensearch-master:9200"
+  username: ""        # prefer existingSecret
+  password: ""
+  verifyCerts: true
+  indexPrefix: "items_"
+  collectionsIndex: "collections"

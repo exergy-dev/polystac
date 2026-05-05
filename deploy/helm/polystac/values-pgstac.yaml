@@ -1,0 +1,8 @@
+# Example overlay for the pgstac backend.
+# Use:  helm install polystac . -f values-pgstac.yaml --set pgstac.dsn=...
+backend: pgstac
+pgstac:
+  dsn: ""               # postgresql://stac:stac@db:5432/stac
+  poolMin: 2
+  poolMax: 20
+  useApiHydrate: false

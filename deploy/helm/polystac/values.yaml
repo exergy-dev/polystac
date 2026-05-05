@@ -1,0 +1,96 @@
+# Default values for polystac. Backend defaults to inmem so the chart
+# is runnable without any external dependencies; switch to pgstac or
+# opensearch by overriding `backend` and supplying the matching env block.
+
+image:
+  repository: ghcr.io/example/polystac
+  tag: ""            # falls back to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+backend: inmem       # one of: inmem | pgstac | opensearch | elasticsearch
+
+# Configuration shared by all backends. Maps to POLYSTAC_* env vars.
+config:
+  listen: ":8000"
+  rootPath: ""
+  logLevel: info
+  logFormat: json
+  defaultLimit: 10
+  maxLimit: 10000
+  landingTitle: "PolyStac"
+  landingDescription: "PolyStac STAC API"
+
+# pgstac config — used only when backend == pgstac.
+pgstac:
+  dsn: ""
+  poolMin: 2
+  poolMax: 20
+  useApiHydrate: false
+
+# opensearch / elasticsearch config — used when backend matches.
+opensearch:
+  hosts: ""          # comma-separated URLs
+  username: ""
+  password: ""       # prefer existingSecret
+  verifyCerts: true
+  indexPrefix: "items_"
+  collectionsIndex: "collections"
+
+# Optional reference to an existing Secret with backend credentials.
+# Keys consumed:
+#   - pgstacDsn
+#   - opensearchUsername / opensearchPassword
+existingSecret: ""
+
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: stac.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+probes:
+  liveness:
+    path: /_health
+  readiness:
+    path: /_ready
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+serviceMonitor:
+  enabled: false
+  interval: 30s

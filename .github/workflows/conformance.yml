@@ -1,0 +1,71 @@
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Conformance gate: boots polystac with the in-memory backend and runs
+# stac-utils/stac-api-validator (Python) against it. Per SDD §14.1 a
+# failed run blocks merge. Two more matrix entries are added when the
+# integration jobs land (testcontainers Postgres+pgstac, OpenSearch).
+jobs:
+  validator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          check-latest: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build polystac
+        run: go build -trimpath -ldflags="-s -w" -o ./polystac ./cmd/polystac
+
+      - name: Boot polystac (inmem)
+        env:
+          POLYSTAC_BACKEND: inmem
+          POLYSTAC_LISTEN: ":8000"
+          POLYSTAC_LOG_LEVEL: error
+        run: |
+          ./polystac serve &
+          echo $! > polystac.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/_health >/dev/null; then
+              echo "polystac up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Seed minimal data
+        run: |
+          curl -fsS -X POST http://127.0.0.1:8000/collections \
+            -H 'Content-Type: application/json' \
+            -d '{"type":"Collection","stac_version":"1.0.0","id":"smoke","description":"smoke","license":"x","extent":{"spatial":{"bbox":[[-180,-90,180,90]]},"temporal":{"interval":[[null,null]]}},"links":[]}'
+
+      - name: Install stac-api-validator
+        run: pip install stac-api-validator
+
+      - name: Run conformance tests
+        run: |
+          stac-api-validator \
+            --root-url http://127.0.0.1:8000/ \
+            --conformance core \
+            --conformance collections \
+            --conformance features \
+            --conformance item-search \
+            --collection smoke \
+            --geometry '{"type":"Point","coordinates":[0,0]}'
+
+      - name: Stop polystac
+        if: always()
+        run: |
+          if [ -f polystac.pid ]; then
+            kill "$(cat polystac.pid)" || true
+          fi

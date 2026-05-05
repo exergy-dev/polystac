@@ -1,0 +1,10 @@
+/polystac
+/polystac-lambda
+/polystac-ingest
+/dist/
+/coverage.out
+/.idea/
+/.vscode/
+/.claude/
+*.test
+*.out

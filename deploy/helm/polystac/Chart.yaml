@@ -1,0 +1,10 @@
+apiVersion: v2
+name: polystac
+description: PolyStac STAC API server (Go)
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+keywords: [stac, geospatial, api]
+home: https://github.com/example/polystac
+maintainers:
+  - name: PolyStac maintainers

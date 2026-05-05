@@ -1,0 +1,60 @@
+# AWS SAM template for PolyStac on Lambda.
+#
+# Build:
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+#     -o bootstrap ./cmd/polystac-lambda
+#   sam package --output-template packaged.yaml ...
+#
+# The function uses the provided.al2023 custom runtime; the Go binary
+# must be named `bootstrap` and live at the root of the deployment
+# package.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: PolyStac STAC API on AWS Lambda
+
+Parameters:
+  Backend:
+    Type: String
+    Default: pgstac
+    AllowedValues: [pgstac, opensearch, elasticsearch, inmem]
+  PgDsn:
+    Type: String
+    Default: ""
+    NoEcho: true
+  EsHosts:
+    Type: String
+    Default: ""
+  EsUsername:
+    Type: String
+    Default: ""
+  EsPassword:
+    Type: String
+    Default: ""
+    NoEcho: true
+
+Resources:
+  PolystacFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .            # contains the `bootstrap` binary
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures: [x86_64]
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          POLYSTAC_BACKEND: !Ref Backend
+          POLYSTAC_PG_DSN: !Ref PgDsn
+          POLYSTAC_ES_HOSTS: !Ref EsHosts
+          POLYSTAC_ES_USERNAME: !Ref EsUsername
+          POLYSTAC_ES_PASSWORD: !Ref EsPassword
+          POLYSTAC_LOG_FORMAT: json
+      FunctionUrlConfig:
+        AuthType: NONE      # set to AWS_IAM and put a CloudFront / API Gateway in front for production
+
+Outputs:
+  FunctionUrl:
+    Description: Public function URL
+    Value: !GetAtt PolystacFunctionUrl.FunctionUrl

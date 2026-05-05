@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "polystac.fullname" . }}
+  labels:
+    {{- include "polystac.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "polystac.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polystac.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: polystac
+          image: {{ include "polystac.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: POLYSTAC_BACKEND
+              value: {{ .Values.backend | quote }}
+            - name: POLYSTAC_LISTEN
+              value: {{ .Values.config.listen | quote }}
+            - name: POLYSTAC_ROOT_PATH
+              value: {{ .Values.config.rootPath | quote }}
+            - name: POLYSTAC_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: POLYSTAC_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: POLYSTAC_DEFAULT_LIMIT
+              value: {{ .Values.config.defaultLimit | quote }}
+            - name: POLYSTAC_MAX_LIMIT
+              value: {{ .Values.config.maxLimit | quote }}
+            - name: POLYSTAC_TITLE
+              value: {{ .Values.config.landingTitle | quote }}
+            - name: POLYSTAC_DESCRIPTION
+              value: {{ .Values.config.landingDescription | quote }}
+            {{- if eq .Values.backend "pgstac" }}
+            - name: POLYSTAC_PG_DSN
+              {{- if .Values.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: pgstacDsn
+              {{- else }}
+              value: {{ .Values.pgstac.dsn | quote }}
+              {{- end }}
+            - name: POLYSTAC_PG_POOL_MIN
+              value: {{ .Values.pgstac.poolMin | quote }}
+            - name: POLYSTAC_PG_POOL_MAX
+              value: {{ .Values.pgstac.poolMax | quote }}
+            - name: POLYSTAC_PG_USE_API_HYDRATE
+              value: {{ .Values.pgstac.useApiHydrate | quote }}
+            {{- else if or (eq .Values.backend "opensearch") (eq .Values.backend "elasticsearch") }}
+            - name: POLYSTAC_ES_HOSTS
+              value: {{ .Values.opensearch.hosts | quote }}
+            - name: POLYSTAC_ES_USERNAME
+              {{- if .Values.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: opensearchUsername
+              {{- else }}
+              value: {{ .Values.opensearch.username | quote }}
+              {{- end }}
+            - name: POLYSTAC_ES_PASSWORD
+              {{- if .Values.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: opensearchPassword
+              {{- else }}
+              value: {{ .Values.opensearch.password | quote }}
+              {{- end }}
+            - name: POLYSTAC_ES_VERIFY_CERTS
+              value: {{ .Values.opensearch.verifyCerts | quote }}
+            - name: POLYSTAC_ES_INDEX_PREFIX
+              value: {{ .Values.opensearch.indexPrefix | quote }}
+            - name: POLYSTAC_ES_COLLECTIONS_INDEX
+              value: {{ .Values.opensearch.collectionsIndex | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
