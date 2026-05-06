@@ -6,7 +6,7 @@
 # Operators wanting the DuckDB backend (CGO) must build a separate image
 # from the duckdb-tagged source — out of scope for the default image.
 
-FROM --platform=$BUILDPLATFORM golang:1.23 AS build
+FROM --platform=$BUILDPLATFORM golang:1.25 AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
