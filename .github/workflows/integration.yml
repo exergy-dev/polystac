@@ -8,66 +8,31 @@ on:
       - 'internal/backends/**'
       - 'pkg/**'
       - 'test/parity/**'
+      - '.github/workflows/integration.yml'
 
 # Real-backend parity matrix. Each job runs the parity corpus
-# (test/parity) against a live datastore. The harness itself is in
-# test/parity/{pgstac,opensearch}_test.go behind `integration` build
-# tags.
+# (test/parity) against a live datastore. Containers are spun up by
+# testcontainers-go from inside the test (same code path as local
+# dev) — no GH Actions `services:` block. Avoids the pgstac-image
+# trap where /docker-entrypoint-initdb.d/990_pgstac.sh runs psql
+# without -U and assumes the cluster has a `postgres` role; setting
+# POSTGRES_USER to anything else (e.g. `stac`) makes that script
+# fail with `role "postgres" does not exist`.
 jobs:
   pgstac:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: ghcr.io/stac-utils/pgstac:v0.8.5
-        env:
-          POSTGRES_USER: stac
-          POSTGRES_PASSWORD: stac
-          POSTGRES_DB: stac
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U stac"
-          --health-interval 5s
-          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23", check-latest: true }
-      - name: Wait for pgstac
-        run: |
-          for i in $(seq 1 30); do
-            if PGPASSWORD=stac psql -h 127.0.0.1 -U stac -c "SELECT pgstac.get_version();" >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-      - name: Run parity corpus
-        env:
-          POLYSTAC_TEST_PG_DSN: postgresql://stac:stac@127.0.0.1:5432/stac
-        run: go test -tags 'integration pgstac' -v ./test/parity/...
+        with: { go-version: "1.25", check-latest: true }
+      - name: Run parity corpus (pgstac)
+        run: go test -tags 'integration pgstac' -v -count=1 ./test/parity/...
 
   opensearch:
     runs-on: ubuntu-latest
-    services:
-      opensearch:
-        image: opensearchproject/opensearch:2.13.0
-        env:
-          discovery.type: single-node
-          plugins.security.disabled: "true"
-          OPENSEARCH_INITIAL_ADMIN_PASSWORD: ChangeMe!23
-        ports: ["9200:9200"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23", check-latest: true }
-      - name: Wait for opensearch
-        run: |
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9200/ >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-      - name: Run parity corpus
-        env:
-          POLYSTAC_TEST_ES_HOSTS: http://127.0.0.1:9200
-        run: go test -tags 'integration opensearch' -v ./test/parity/...
+        with: { go-version: "1.25", check-latest: true }
+      - name: Run parity corpus (opensearch)
+        run: go test -tags 'integration opensearch' -v -count=1 ./test/parity/...
