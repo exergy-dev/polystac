@@ -7,8 +7,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.27
 	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2
-	github.com/docker/go-connections v0.6.0
 	github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243
+	github.com/exergy-dev/go-topology-suite v0.0.0-20260506000836-ec8d4a38a870
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/testcontainers/testcontainers-go v0.42.0
@@ -45,9 +45,9 @@ require (
 	github.com/cpuguy83/dockercfg v0.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
-	github.com/exergy-dev/go-topology-suite v0.0.0-20260505022905-a675876f37ca // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
