@@ -80,7 +80,8 @@ func New(opt Options) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /", s.landing)
+	mux.HandleFunc("GET /{$}", s.landing)
+	mux.HandleFunc("/", s.notFound)
 	mux.HandleFunc("GET /conformance", s.conformance_)
 	mux.HandleFunc("GET /api", s.openapi)
 
@@ -407,6 +408,13 @@ func (s *Server) queryables(collectionID string) http.HandlerFunc {
 }
 
 // ---- health ------------------------------------------------------------
+
+func (s *Server) notFound(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]string{
+		"code":        "NotFound",
+		"description": "route not found",
+	})
+}
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
