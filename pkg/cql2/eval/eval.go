@@ -17,14 +17,9 @@
 //   - Advanced: between, in, like, isNull
 //   - Temporal: t_after, t_before, t_during, t_intersects
 //     (operates on properties.datetime / start_datetime / end_datetime)
-//   - Spatial: s_intersects, s_within (bbox approximation — see notes)
-//
-// Spatial caveat: the oracle uses the item's bbox for spatial predicates,
-// not the full geometry. This is intentionally a conservative oracle: it
-// accepts what every backend would accept under a bbox-prefilter, and
-// the property tests scope spatial cases accordingly. For a true polygon-
-// polygon oracle we would pull in a full spatial library, which neither
-// the inmem use case nor the current property-test corpus requires.
+//   - Spatial: s_intersects, s_within, s_contains, s_disjoint (exact
+//     geometry predicates via go-topology-suite; falls back to bbox
+//     approximation when either side cannot be rendered as a geometry)
 package eval
 
 import (
@@ -34,7 +29,11 @@ import (
 	"strings"
 	"time"
 
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
+	gtspredicate "github.com/exergy-dev/go-topology-suite/predicate"
+
 	"github.com/example/polystac/pkg/cql2"
+	"github.com/example/polystac/pkg/spatial"
 	"github.com/example/polystac/pkg/stac"
 )
 
@@ -549,7 +548,6 @@ func asInterval(v any) ([2]*time.Time, bool) {
 	return [2]*time.Time{}, false
 }
 
-// evalSpatial uses bbox approximation. See package doc.
 func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if len(op.Args) != 2 {
 		return nil, fmt.Errorf("cql2/eval: %s arity", op.Op)
@@ -562,124 +560,50 @@ func evalSpatial(op *cql2.Op, item *stac.Item) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	lb, lok := asBBox(l, item)
-	rb, rok := asBBox(r, item)
+	lg, lok := asGTSGeom(l, item)
+	rg, rok := asGTSGeom(r, item)
 	if !lok || !rok {
 		return false, nil
 	}
 	switch op.Op {
 	case cql2.OpSIntersects:
-		return bboxIntersect(lb, rb), nil
-	case cql2.OpSWithin:
-		return bboxWithin(lb, rb), nil
-	case cql2.OpSContains:
-		return bboxWithin(rb, lb), nil
+		return gtspredicate.Intersects(lg, rg)
 	case cql2.OpSDisjoint:
-		return !bboxIntersect(lb, rb), nil
+		hit, err := gtspredicate.Intersects(lg, rg)
+		if err != nil {
+			return nil, err
+		}
+		return !hit, nil
+	case cql2.OpSWithin:
+		return gtspredicate.Within(lg, rg)
+	case cql2.OpSContains:
+		return gtspredicate.Contains(lg, rg)
 	}
 	return false, nil
 }
 
-// asBBox extracts a bbox [w,s,e,n] from one of: a *stac.Geometry (uses
-// the item's bbox when available, otherwise computes it), a
-// cql2.Geometry literal, a coordinate slice, or the item's geometry
-// property.
-func asBBox(v any, item *stac.Item) ([4]float64, bool) {
+// asGTSGeom dispatches on the concrete type that eval produced. It
+// covers every shape eval emits for a spatial argument: a *stac.Geometry
+// (item-bound `geometry` ref), a cql2 geometry literal, a raw bbox
+// slice from BBOX(...), or a fallback to the item's own geometry when
+// no argument shape matches.
+func asGTSGeom(v any, item *stac.Item) (gtsgeom.Geometry, bool) {
 	switch x := v.(type) {
-	case []float64:
-		if len(x) >= 4 {
-			return [4]float64{x[0], x[1], x[2], x[3]}, true
-		}
 	case *stac.Geometry:
-		if item != nil && len(item.BBox) >= 4 {
-			return [4]float64{item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3]}, true
-		}
-		return x.BBox()
+		return spatial.FromSTAC(x)
 	case stac.Geometry:
-		return x.BBox()
+		return spatial.FromSTAC(&x)
+	case cql2.Geometry:
+		return spatial.FromCQL2(x)
+	case []float64:
+		if len(x) < 4 {
+			return nil, false
+		}
+		return spatial.BBoxPolygon(x[0], x[1], x[2], x[3]), true
 	}
-	if g, ok := v.(cql2.Geometry); ok {
-		return cql2GeometryBBox(g)
+	if item != nil && item.Geometry != nil {
+		return spatial.FromSTAC(item.Geometry)
 	}
-	if item != nil && len(item.BBox) >= 4 {
-		return [4]float64{item.BBox[0], item.BBox[1], item.BBox[2], item.BBox[3]}, true
-	}
-	return [4]float64{}, false
+	return nil, false
 }
 
-func cql2GeometryBBox(g cql2.Geometry) ([4]float64, bool) {
-	mn := [2]float64{math.Inf(1), math.Inf(1)}
-	mx := [2]float64{math.Inf(-1), math.Inf(-1)}
-	saw := false
-	visit := func(c cql2.Coord) {
-		if c.X < mn[0] {
-			mn[0] = c.X
-		}
-		if c.Y < mn[1] {
-			mn[1] = c.Y
-		}
-		if c.X > mx[0] {
-			mx[0] = c.X
-		}
-		if c.Y > mx[1] {
-			mx[1] = c.Y
-		}
-		saw = true
-	}
-	var walk func(g cql2.Geometry)
-	walk = func(g cql2.Geometry) {
-		switch x := g.(type) {
-		case *cql2.Point:
-			if !x.Empty {
-				visit(x.Coord)
-			}
-		case *cql2.LineString:
-			for _, c := range x.Coords {
-				visit(c)
-			}
-		case *cql2.Polygon:
-			for _, r := range x.Rings {
-				for _, c := range r {
-					visit(c)
-				}
-			}
-		case *cql2.MultiPoint:
-			for _, p := range x.Points {
-				if !p.Empty {
-					visit(p.Coord)
-				}
-			}
-		case *cql2.MultiLineString:
-			for _, ls := range x.Lines {
-				for _, c := range ls.Coords {
-					visit(c)
-				}
-			}
-		case *cql2.MultiPolygon:
-			for _, p := range x.Polys {
-				for _, r := range p.Rings {
-					for _, c := range r {
-						visit(c)
-					}
-				}
-			}
-		case *cql2.GeometryCollection:
-			for _, sub := range x.Geoms {
-				walk(sub)
-			}
-		}
-	}
-	walk(g)
-	if !saw {
-		return [4]float64{}, false
-	}
-	return [4]float64{mn[0], mn[1], mx[0], mx[1]}, true
-}
-
-func bboxIntersect(a, b [4]float64) bool {
-	return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
-}
-
-func bboxWithin(inner, outer [4]float64) bool {
-	return inner[0] >= outer[0] && inner[1] >= outer[1] && inner[2] <= outer[2] && inner[3] <= outer[3]
-}

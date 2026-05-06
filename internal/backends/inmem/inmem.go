@@ -17,9 +17,13 @@ import (
 	"sync"
 	"time"
 
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
+	gtspredicate "github.com/exergy-dev/go-topology-suite/predicate"
+
 	"github.com/example/polystac/internal/backends"
 	"github.com/example/polystac/pkg/cql2/eval"
 	"github.com/example/polystac/pkg/repository"
+	"github.com/example/polystac/pkg/spatial"
 	"github.com/example/polystac/pkg/stac"
 )
 
@@ -237,9 +241,19 @@ func (r *Repo) Search(_ context.Context, req repository.SearchRequest) (*reposit
 	candidates := r.collectCandidates(req)
 	r.mu.RUnlock()
 
+	// Build the query-side gts geometry once; matchItem is called
+	// per-item and we don't want to re-marshal it every time.
+	var qBBoxGeom, qIntersectsGeom gtsgeom.Geometry
+	if len(req.BBox) >= 4 {
+		qBBoxGeom = spatial.BBoxPolygon(req.BBox[0], req.BBox[1], req.BBox[2], req.BBox[3])
+	}
+	if req.Intersects != nil {
+		qIntersectsGeom, _ = spatial.FromSTAC(req.Intersects)
+	}
+
 	filtered := make([]*stac.Item, 0, len(candidates))
 	for _, it := range candidates {
-		ok, err := matchItem(it, req)
+		ok, err := matchItem(it, req, qBBoxGeom, qIntersectsGeom)
 		if err != nil {
 			return nil, fmt.Errorf("inmem: filter: %w", err)
 		}
@@ -315,17 +329,14 @@ func (r *Repo) collectCandidates(req repository.SearchRequest) []*stac.Item {
 	return out
 }
 
-// matchItem applies bbox, intersects, datetime, and CQL2 filters.
-func matchItem(it *stac.Item, req repository.SearchRequest) (bool, error) {
-	if len(req.BBox) >= 4 {
-		if !bboxOverlaps(it, req.BBox) {
+func matchItem(it *stac.Item, req repository.SearchRequest, qBBox, qIntersects gtsgeom.Geometry) (bool, error) {
+	if qBBox != nil {
+		if !intersectsBBox(it, req.BBox, qBBox) {
 			return false, nil
 		}
 	}
 	if req.Intersects != nil {
-		// In-memory backend approximates intersects with bbox overlap.
-		// This matches the cql2/eval oracle's behavior.
-		if !geometryBBoxOverlaps(it, req.Intersects) {
+		if !intersectsGeometry(it, req.Intersects, qIntersects) {
 			return false, nil
 		}
 	}
@@ -351,17 +362,27 @@ func matchItem(it *stac.Item, req repository.SearchRequest) (bool, error) {
 	return true, nil
 }
 
-func bboxOverlaps(it *stac.Item, bb []float64) bool {
-	if len(it.BBox) < 4 {
-		return false
+func intersectsBBox(it *stac.Item, bb []float64, qBBox gtsgeom.Geometry) bool {
+	if itemG, ok := spatial.FromSTAC(it.Geometry); ok {
+		if hit, err := gtspredicate.Intersects(itemG, qBBox); err == nil {
+			return hit
+		}
 	}
-	a := [4]float64{it.BBox[0], it.BBox[1], it.BBox[2], it.BBox[3]}
-	b := [4]float64{bb[0], bb[1], bb[2], bb[3]}
-	return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
+	return bboxOverlaps(it, bb)
 }
 
-func geometryBBoxOverlaps(it *stac.Item, g *stac.Geometry) bool {
-	gb, ok := g.BBox()
+func intersectsGeometry(it *stac.Item, queryStac *stac.Geometry, qGeom gtsgeom.Geometry) bool {
+	if qGeom != nil {
+		if itemG, ok := spatial.FromSTAC(it.Geometry); ok {
+			if hit, err := gtspredicate.Intersects(itemG, qGeom); err == nil {
+				return hit
+			}
+		}
+	}
+	// Fallback path: when either side can't be rendered as a full
+	// geometry, approximate with bbox overlap so empty/malformed
+	// inputs don't silently drop matches.
+	gb, ok := queryStac.BBox()
 	if !ok {
 		return true
 	}
@@ -370,12 +391,17 @@ func geometryBBoxOverlaps(it *stac.Item, g *stac.Geometry) bool {
 	}
 	if it.Geometry != nil {
 		if ib, ok := it.Geometry.BBox(); ok {
-			a := [4]float64{ib[0], ib[1], ib[2], ib[3]}
-			b := gb
-			return !(a[2] < b[0] || a[0] > b[2] || a[3] < b[1] || a[1] > b[3])
+			return !(ib[2] < gb[0] || ib[0] > gb[2] || ib[3] < gb[1] || ib[1] > gb[3])
 		}
 	}
 	return true
+}
+
+func bboxOverlaps(it *stac.Item, bb []float64) bool {
+	if len(it.BBox) < 4 {
+		return false
+	}
+	return !(it.BBox[2] < bb[0] || it.BBox[0] > bb[2] || it.BBox[3] < bb[1] || it.BBox[1] > bb[3])
 }
 
 func datetimeMatches(it *stac.Item, ti repository.TemporalInterval) bool {

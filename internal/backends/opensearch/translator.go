@@ -1,12 +1,16 @@
 package opensearch
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
+
 	"github.com/example/polystac/pkg/cql2"
 	"github.com/example/polystac/pkg/repository"
+	"github.com/example/polystac/pkg/spatial"
 	"github.com/example/polystac/pkg/stac"
 )
 
@@ -533,21 +537,22 @@ func geometryShape(g *stac.Geometry) any {
 	return out
 }
 
+// geometryFromCQL2 converts any CQL2 geometry literal into the GeoJSON
+// map OpenSearch's geo_shape query accepts. The JSON round-trip is
+// the simplest way to land on map[string]any from a gts.Geometry; gts
+// has no direct map encoder.
 func geometryFromCQL2(g cql2.Geometry) any {
-	switch x := g.(type) {
-	case *cql2.Point:
-		c := []float64{x.Coord.X, x.Coord.Y}
-		return map[string]any{"type": "Point", "coordinates": c}
-	case *cql2.Polygon:
-		rings := make([][][]float64, 0, len(x.Rings))
-		for _, r := range x.Rings {
-			ring := make([][]float64, 0, len(r))
-			for _, c := range r {
-				ring = append(ring, []float64{c.X, c.Y})
-			}
-			rings = append(rings, ring)
-		}
-		return map[string]any{"type": "Polygon", "coordinates": rings}
+	gg, ok := spatial.FromCQL2(g)
+	if !ok {
+		return nil
 	}
-	return nil
+	raw, err := gtsgeojson.Marshal(gg)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }

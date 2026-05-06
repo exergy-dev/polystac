@@ -75,6 +75,8 @@ github.com/elastic/go-elasticsearch/v8 v8.12.1 h1:QcuFK5LaZS0pSIj/eAEsxmJWmMo7tU
 github.com/elastic/go-elasticsearch/v8 v8.12.1/go.mod h1:wSzJYrrKPZQ8qPuqAqc6KMR4HrBfHnZORvyL+FMFqq0=
 github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243 h1:g0p6Jpf+TJAoz4o0NKPLAE0KuvRTyE3foSusbxoRfl4=
 github.com/exergy-dev/go-cql2 v0.0.0-20260504204024-796456d5f243/go.mod h1:yi9GdixFZp5aWb7FI1QecF0PF+OCmWpIQn2tSTuWNWQ=
+github.com/exergy-dev/go-topology-suite v0.0.0-20260505022905-a675876f37ca h1:hFliUX8PQzQaJ6tZ+b+S4ZX/TOrCAyed6ZkT1oVuvQ8=
+github.com/exergy-dev/go-topology-suite v0.0.0-20260505022905-a675876f37ca/go.mod h1:lLDAmaBcr7m5S0rVgGchtWNW1kwcqUrZ0BILlQHrpIE=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/fsnotify/fsnotify v1.7.0 h1:8JEhPFa5W2WU7YfeZzPNqzMP6Lwt7L2715Ggo0nosvA=
