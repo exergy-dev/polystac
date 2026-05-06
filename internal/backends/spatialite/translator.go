@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
 	gtswkt "github.com/exergy-dev/go-topology-suite/wkt"
 
 	"github.com/example/polystac/pkg/cql2"
+	"github.com/example/polystac/pkg/spatial"
 )
 
 // translateFilter walks a CQL2 AST into a parameterized SQL fragment.
@@ -347,7 +347,7 @@ func spatialWKT(e cql2.Expression) (string, error) {
 		}
 		return "", &cql2.TranslationError{Backend: backendName, Reason: "bbox needs 4 elements"}
 	case *cql2.GeomLit:
-		if g, ok := cql2GeomToGTS(n.Geom); ok {
+		if g, ok := spatial.FromCQL2(n.Geom); ok {
 			out, err := gtswkt.Marshal(g)
 			if err != nil {
 				return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("encode geom: %v", err)}
@@ -361,24 +361,6 @@ func spatialWKT(e cql2.Expression) (string, error) {
 		return string(b), nil
 	}
 	return "", &cql2.TranslationError{Backend: backendName, Reason: fmt.Sprintf("spatial literal type %T", e)}
-}
-
-func cql2GeomToGTS(g cql2.Geometry) (gtsgeom.Geometry, bool) {
-	switch x := g.(type) {
-	case *cql2.Point:
-		return gtsgeom.NewPoint(nil, gtsgeom.XY{X: x.Coord.X, Y: x.Coord.Y}), true
-	case *cql2.Polygon:
-		rings := make([][]gtsgeom.XY, len(x.Rings))
-		for i, ring := range x.Rings {
-			pts := make([]gtsgeom.XY, len(ring))
-			for j, c := range ring {
-				pts[j] = gtsgeom.XY{X: c.X, Y: c.Y}
-			}
-			rings[i] = pts
-		}
-		return gtsgeom.NewPolygon(nil, rings...), true
-	}
-	return nil, false
 }
 
 func arityErr(op cql2.Operator) error {
