@@ -9,7 +9,9 @@ package stac
 import (
 	"encoding/json"
 	"fmt"
-	"math"
+
+	gtsgeojson "github.com/exergy-dev/go-topology-suite/geojson"
+	gtsgeom "github.com/exergy-dev/go-topology-suite/geom"
 )
 
 // GeometryType enumerates the GeoJSON geometry types STAC items use.
@@ -37,80 +39,43 @@ type Geometry struct {
 	Geometries  []Geometry   `json:"geometries,omitempty"`
 }
 
-// MarshalJSON enforces the GeoJSON ordering: type before coordinates/
-// geometries. Empty Coordinates is omitted only for GeometryCollection;
-// other geometry types must always carry coordinates.
+// MarshalJSON delegates to go-topology-suite's GeoJSON encoder, which
+// matches stac-fastapi's Python json.dumps output (notably zero-padded
+// scientific-notation exponents that Go's encoding/json doesn't emit).
+// We round-trip via the canonical struct shape first so the typed
+// []float64 / [][]float64 / ... and the decoded-from-JSON []any paths
+// produce the same wire bytes.
 func (g Geometry) MarshalJSON() ([]byte, error) {
-	if g.Type == GeometryGeometryCollection {
-		return json.Marshal(struct {
-			Type       GeometryType `json:"type"`
-			Geometries []Geometry   `json:"geometries"`
-		}{g.Type, g.Geometries})
+	canonical, err := g.canonicalBytes()
+	if err != nil {
+		return nil, err
 	}
-	return json.Marshal(struct {
-		Type        GeometryType `json:"type"`
-		Coordinates any          `json:"coordinates"`
-	}{g.Type, g.Coordinates})
+	parsed, err := gtsgeojson.Unmarshal(canonical)
+	if err != nil {
+		// Degenerate or empty inputs — fall through to the canonical
+		// form rather than dropping the response. Preserves the
+		// pre-gts behavior for those edge cases.
+		return canonical, nil
+	}
+	return gtsgeojson.Marshal(parsed)
 }
 
 // BBox computes the axis-aligned bounding box of the geometry's
 // coordinates. Returns ([west, south, east, north], true) when the
-// geometry has at least one numeric coordinate. Walks GeometryCollection
-// children recursively.
+// geometry has at least one numeric coordinate.
 func (g *Geometry) BBox() ([4]float64, bool) {
 	if g == nil {
 		return [4]float64{}, false
 	}
-	mn := [2]float64{math.Inf(1), math.Inf(1)}
-	mx := [2]float64{math.Inf(-1), math.Inf(-1)}
-	saw := false
-	visit := func(x, y float64) {
-		if x < mn[0] {
-			mn[0] = x
-		}
-		if y < mn[1] {
-			mn[1] = y
-		}
-		if x > mx[0] {
-			mx[0] = x
-		}
-		if y > mx[1] {
-			mx[1] = y
-		}
-		saw = true
-	}
-	var walk func(any)
-	walk = func(v any) {
-		switch coords := v.(type) {
-		case []float64:
-			if len(coords) >= 2 {
-				visit(coords[0], coords[1])
-			}
-		case []any:
-			if len(coords) >= 2 {
-				if x, ok := coords[0].(float64); ok {
-					if y, ok := coords[1].(float64); ok {
-						visit(x, y)
-						return
-					}
-				}
-			}
-			for _, e := range coords {
-				walk(e)
-			}
-		}
-	}
-	walk(g.Coordinates)
-	for _, sg := range g.Geometries {
-		if bb, ok := sg.BBox(); ok {
-			visit(bb[0], bb[1])
-			visit(bb[2], bb[3])
-		}
-	}
-	if !saw {
+	parsed, ok := g.toGTS()
+	if !ok {
 		return [4]float64{}, false
 	}
-	return [4]float64{mn[0], mn[1], mx[0], mx[1]}, true
+	env := parsed.Envelope()
+	if env.IsEmpty() {
+		return [4]float64{}, false
+	}
+	return [4]float64{env.MinX, env.MinY, env.MaxX, env.MaxY}, true
 }
 
 // UnmarshalJSON validates the discriminator and dispatches.
@@ -136,4 +101,36 @@ func (g *Geometry) UnmarshalJSON(data []byte) error {
 		g.Coordinates = coords
 	}
 	return nil
+}
+
+// canonicalBytes emits the type+coordinates (or type+geometries)
+// struct shape that both Go's stdlib and gts can parse. Used as the
+// hand-off format for round-tripping into gts.
+func (g Geometry) canonicalBytes() ([]byte, error) {
+	if g.Type == GeometryGeometryCollection {
+		return json.Marshal(struct {
+			Type       GeometryType `json:"type"`
+			Geometries []Geometry   `json:"geometries"`
+		}{g.Type, g.Geometries})
+	}
+	return json.Marshal(struct {
+		Type        GeometryType `json:"type"`
+		Coordinates any          `json:"coordinates"`
+	}{g.Type, g.Coordinates})
+}
+
+// toGTS is the internal converter to a go-topology-suite geometry.
+// `pkg/spatial.FromSTAC` does the same thing externally; duplicated
+// here to keep `pkg/stac` from depending on `pkg/spatial` (which would
+// be a cycle, since spatial depends on stac).
+func (g Geometry) toGTS() (gtsgeom.Geometry, bool) {
+	canonical, err := g.canonicalBytes()
+	if err != nil {
+		return nil, false
+	}
+	parsed, err := gtsgeojson.Unmarshal(canonical)
+	if err != nil {
+		return nil, false
+	}
+	return parsed, true
 }
